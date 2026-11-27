@@ -691,7 +691,11 @@ function addImages(files) {
     toast('An image goes into a repository with the document that shows it: open a file from a repository first.');
     return;
   }
-  if (state.repo && !state.repo.canPush) toast('You cannot push to this repository, so the image cannot be committed with the document.');
+  if (state.repo && !state.repo.canPush) {
+    toast(canFork()
+      ? 'You cannot push to this repository: “fork and propose” will commit the image with the document in your fork.'
+      : 'You cannot push to this repository, so the image cannot be committed with the document.');
+  }
   const inTree = new Set((state.tree?.entries || []).map((e) => e.path.toLowerCase()));
   const taken = (p) => inTree.has(p.toLowerCase()) || [...state.pending.keys()].some((k) => k.toLowerCase() === p.toLowerCase());
   const doc = draftKey(loc);
