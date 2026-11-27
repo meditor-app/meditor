@@ -32,6 +32,10 @@ browser. The only server-side piece is a tiny relay that completes *Sign in with
   - `Ctrl+B` bold, `Ctrl+I` italic, `Ctrl+E` code, `Ctrl+K` link, `Ctrl+1/2/3` headings
   - `Enter` continues a list or a quote (on an empty item it ends the list);
     `Tab` / `Shift+Tab` indent and outdent
+  - `Ctrl+F` finds in the source, `Ctrl+H` also replaces: `Enter` / `Shift+Enter` (or `F3`)
+    for the next / previous match, toggles for matching case, whole words and regular
+    expressions (the replacement may use `$1`); *replace all* is undone by one `Ctrl+Z`
+  - the Markdown in the source is lightly coloured; *colours* in the panel's header turns it off
   - *source / both / rendered* choose the panels; *files* hides the file list; drag the gaps
     between panels to resize them (double-click to reset)
 - **Rendering**: *meditor (live)* renders as you type, GitHub-flavoured: tables, task lists,

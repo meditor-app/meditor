@@ -292,20 +292,72 @@ a.minor:hover { color: var(--accent); }
 }
 .banner button { min-height: 24px; padding: 1px 8px; }
 
-#src {
-  flex: 1 1 auto;
+/* The source: a textarea over a highlighted copy of its text (ui.js, "highlighting"). The
+   two must lay the text out identically, so everything that places a character is set on
+   both, here, and nothing in the copy may change a character's width (colours only). */
+.srcwrap { position: relative; flex: 1 1 auto; min-height: 0; display: flex; background: var(--plate); }
+#src, #srcHlText {
+  margin: 0;
   border: none;
-  resize: none;
-  background: var(--plate);
-  color: var(--ink);
   padding: 14px 16px 40vh;
   font: 13.5px/1.6 var(--mono);
+  font-variant-ligatures: none;
+  letter-spacing: normal;
+  word-spacing: normal;
   tab-size: 4;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  word-break: normal;
+  text-align: start;
+}
+#src {
+  flex: 1 1 auto;
+  position: relative;
+  resize: none;
+  background: transparent;
+  color: var(--ink);
   outline: none;
+  /* always there, so that the copy's width only changes when the panel's does */
+  overflow-y: scroll;
 }
 #src:focus-visible { outline: none; }
+.srcwrap.coloured #src { color: transparent; caret-color: var(--ink); }
+.srcwrap.coloured #src::selection { color: transparent; background: color-mix(in srgb, var(--accent) 26%, transparent); }
+.srchl { position: absolute; top: 0; left: 0; overflow: hidden; pointer-events: none; user-select: none; -webkit-user-select: none; color: var(--ink); }
+#srcHlText { position: relative; box-sizing: border-box; }
+.srcwrap:not(.coloured) .srchl { color: transparent; }
+
+.srchl .mk { color: var(--ink-faint); }
+.srchl .hd { color: var(--accent); }
+.srchl .hd.mk { color: var(--accent); opacity: 0.65; }
+.srchl .em { color: var(--important); }
+.srchl .strong { color: var(--warning); }
+.srchl .del { color: var(--ink-faint); text-decoration: line-through; }
+.srchl .code { color: var(--good); }
+.srchl .fence { color: var(--good); opacity: 0.7; }
+.srchl .ln { color: var(--link); }
+.srchl .ln.mk { opacity: 0.65; }
+.srchl .url { color: var(--ink-faint); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 2px; }
+.srchl .li, .srchl .tk { color: var(--accent); }
+.srchl .qt { color: var(--note); }
+.srchl .html { color: var(--ink-faint); }
+.srchl .fm { color: var(--ink-soft); }
+.srchl .fm.mk { color: var(--ink-faint); }
+.srchl .hit { background: rgba(255, 196, 0, 0.32); border-radius: 2px; }
+.srchl .hit.cur { background: rgba(255, 140, 0, 0.55); box-shadow: 0 0 0 1px rgba(255, 120, 0, 0.9); }
+
+/* find and replace, above the source */
+.findbar { display: flex; flex-direction: column; gap: 4px; padding: 5px 8px; background: var(--panel); border-bottom: 1px solid var(--rule-soft); }
+.findrow { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.findrow input { flex: 1 1 140px; font: 12.5px var(--mono); min-height: 26px; }
+.findrow input.bad { border-color: var(--bad); }
+.findrow button { min-height: 26px; padding: 2px 7px; }
+.findrow .opt { font: 12px var(--mono); min-width: 28px; justify-content: center; }
+.findrow .opt[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); }
+.findcount { margin: 0 4px; font-size: 12px; color: var(--ink-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 16em; font-variant-numeric: tabular-nums; }
+.findcount.bad { color: var(--bad); }
+.panehead button.flat { border: none; background: none; min-height: 22px; padding: 0 4px; }
+.panehead button.flat:hover { color: var(--accent); }
 
 .previewscroll { flex: 1 1 auto; overflow: auto; }
 
@@ -541,7 +593,7 @@ a.minor:hover { color: var(--accent); }
   .recent .forget { opacity: 1; min-width: 40px; justify-content: center; }
   .repolist li button { padding: 11px 12px; }
   .toggle input[type="checkbox"], .choice input[type="radio"] { width: 20px; height: 20px; }
-  #src, input[type="text"], input[type="search"], input[type="password"], select, textarea,
+  #src, #srcHlText, input[type="text"], input[type="search"], input[type="password"], select, textarea,
   .dlg .field input, .dlg .field textarea, .choice input[type="text"], .branch select, .panehead select { font-size: 16px; }
 }
 
@@ -601,7 +653,7 @@ a.minor:hover { color: var(--accent); }
 
   .previewscroll, #src, .tree, .files .empty { overscroll-behavior: contain; }
   .markdown-body { padding: 16px 16px 30vh; }
-  #src { padding: 12px 12px 30vh; }
+  #src, #srcHlText { padding: 12px 12px 30vh; } /* both: see "The source" above */
 }
 
 /* The toolbar, where it does not fit on one line (narrow screens, and tablets turned sideways
@@ -641,7 +693,7 @@ a.minor:hover { color: var(--accent); }
 @media (max-width: 640px) {
   .seg button[data-view="split"] { display: none; }
   .ghlink { display: none; } /* meditor's own source: room for the account instead */
-  .panehead .toggle { display: none; } /* sync scroll: one panel has nothing to keep in step */
+  .previewpane .panehead .toggle { display: none; } /* sync scroll: one panel has nothing to keep in step */
   .choice label { display: grid; grid-template-columns: auto minmax(0, 1fr); }
   .choice input[type="text"] { grid-column: 2; }
   .wordmark { font-size: 20px; }
