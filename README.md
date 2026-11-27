@@ -34,7 +34,9 @@ browser. The only server-side piece is a tiny relay that completes *Sign in with
     `Tab` / `Shift+Tab` indent and outdent
   - `Ctrl+F` finds in the source, `Ctrl+H` also replaces: `Enter` / `Shift+Enter` (or `F3`)
     for the next / previous match, toggles for matching case, whole words and regular
-    expressions (the replacement may use `$1`); *replace all* is undone by one `Ctrl+Z`
+    expressions (`Alt+C`, `Alt+W`, `Alt+R`; the replacement may use `$1`); *replace all*
+    is undone by one `Ctrl+Z`. On macOS: `⌘F` finds, `⌥⌘F` replaces, `⌃⌥C`, `⌃⌥W`, `⌃⌥R`
+    toggle the options (`Ctrl+H` stays delete-backward)
   - the Markdown in the source is lightly coloured; *colours* in the panel's header turns it off
   - *source / both / rendered* choose the panels; *files* hides the file list; drag the gaps
     between panels to resize them (double-click to reset)
