@@ -23,3 +23,9 @@ after quedit (`~/quedit`), whose palette and panel layout it shares.
   into `SHELL` in `sw.js` (a test checks), and a new top-level file the page needs must be
   copied in `.github/workflows/pages.yml`. The PNG icons are rendered from `icons/icon.svg`
   and `icons/icon-maskable.svg` with `rsvg-convert`.
+
+## Workflow
+
+`master` is protected: every change goes through a pull request (opened as a draft), CI's
+`test` job must pass, and Ondra merges by hand on GitHub. Never push to `master`, and never
+merge a pull request. Merging deploys the site (GitHub Pages builds from `master`).
