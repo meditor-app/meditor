@@ -24,6 +24,7 @@ const SHELL = [
   'src/mdsyntax.js',
   'src/fork.js',
   'src/images.js',
+  'src/drafts.js',
   'icons/icon.svg',
   'icons/icon-192.png',
 ];
