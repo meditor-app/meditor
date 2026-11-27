@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { GitHub, encodeBase64, decodeBase64, bytesToBase64 } from '../src/github.js';
+import { GitHub, GitHubError, encodeBase64, decodeBase64, bytesToBase64 } from '../src/github.js';
 import {
   parseFragment, formatFragment, parseGitHubUrl, splitRefPath, resolveRef, joinPath, githubUrl,
   addRecent, removeRecent, renameRecent, ago,
@@ -195,4 +195,36 @@ test('recent files: newest first, no duplicates, capped', () => {
   assert.equal(ago(0, 30e3), 'just now');
   assert.equal(ago(0, 5 * 60e3), '5 min ago');
   assert.equal(ago(0, 30 * 3600e3), 'yesterday');
+});
+
+test('no API URL can leave the repository it names (#24)', async () => {
+  const f = fake({ 'GET /repos/o/r/git/ref/heads/main': { body: { object: { sha: 'h' } } } });
+  const gh = new GitHub('T', f);
+  const refused = async (what, fn) => {
+    await assert.rejects(fn, (e) => e instanceof GitHubError && e.status === 400, what);
+  };
+  for (const path of ['..', '.', '', 'a/../../x', 'a//b', '%2e%2e/x', '%252E%252E/x', 'a\\..\\x', 'a/%2f../x'])
+    await refused(`path ${path}`, () => gh.getFile('o', 'r', path, 'main'));
+  await refused('put', () => gh.putFile('o', 'r', '../../../victim/private/contents/README.md', { text: 'x', message: 'm', branch: 'main' }));
+  await refused('delete', () => gh.deleteFile('o', 'r', '../x/contents/a.md', { message: 'm', branch: 'main', sha: 's' }));
+  await refused('raw', () => gh.getRaw('o', 'r', 'a/../../../x', 'main'));
+  for (const [owner, name] of [['..', 'r'], ['o', '..'], ['o', '.'], ['o/x', 'r'], ['o', 'r?x'], ['o', 'r#'], ['o.x', 'r']])
+    await refused(`repo ${owner}/${name}`, () => gh.repo(owner, name));
+  for (const ref of ['..', '.', '', '../../victim/private', '%2e%2e'])
+    await refused(`ref ${ref}`, () => gh.getFile('o', 'r', 'a.md', ref));
+  await refused('tree', () => gh.tree('o', 'r', '..'));
+  await refused('commit', () => gh.commitChanges('o', 'r', '../../../victim/private/git/refs/heads/main', { message: 'm', changes: [{ path: 'a.md', text: 'x' }] }));
+  // a moved or new file's path is checked (blobSha) before anything is written
+  await refused('commit path', () => gh.commitChanges('o', 'r', 'main', { message: 'm', changes: [{ path: '../x.md', text: 'x', expect: null }] }));
+  await refused('branch', () => gh.branchSha('o', 'r', 'a/../..'));
+  await refused('update ref', () => gh.updateRef('o', 'r', '..', 's'));
+  await refused('create ref', () => gh.createRef('o', 'r', '../tags/v1', 's'));
+  assert.equal(f.calls.filter((c) => !c.url.startsWith('https://api.github.com/repos/o/r/git/ref/heads/main')).length, 0);
+});
+
+test('names, branches and paths GitHub allows still go through', async () => {
+  const f = fake({
+    'GET /repos/my_org-1/r.js_x/contents/docs/a%20..b/...md?ref=feat%2Fx.y': { body: { type: 'file', sha: 's', encoding: 'base64', content: '' } },
+  });
+  assert.deepEqual(await new GitHub('T', f).getFile('my_org-1', 'r.js_x', 'docs/a ..b/...md', 'feat/x.y'), { text: '', sha: 's' });
 });
