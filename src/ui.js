@@ -16,12 +16,19 @@ import {
 import { lineDiff } from './diff.js';
 import {
   findAll, matchFrom, matchBefore, replaceOne, replaceAll, escapeRegExp, MAX_MATCHES,
+  anchorAfter, findShortcut, findOptionKey, shortcutText, commandHeld,
 } from './find.js';
-import { tokenizeLine, START, stateKey, rangesByLine, lineHtml } from './mdsyntax.js';
+import { tokenizeLine, retokenize, START, rangesByLine, lineHtml } from './mdsyntax.js';
 import { proposeChange } from './fork.js';
 import { proposeImagePath, imageMarkdown, referencedPaths, formatSize } from './images.js';
 
 const $ = (id) => document.getElementById(id);
+const IS_MAC = /mac|iphone|ipad/i.test(navigator.userAgentData?.platform || navigator.platform || '');
+/** What the shortcut functions of find.js look at in a key event. */
+const keyInfo = (e) => ({
+  key: e.key, code: e.code, ctrlKey: e.ctrlKey, metaKey: e.metaKey, altKey: e.altKey, shiftKey: e.shiftKey,
+  altGraph: !!e.getModifierState?.('AltGraph'),
+});
 const K = {
   oldToken: 'meditor:token',
   pending: 'meditor:signin',
@@ -560,10 +567,10 @@ function updateCommitButton() {
   const b = $('commit');
   const loc = state.loc;
   b.disabled = !loc;
-  b.title = !loc ? 'open a file from a repository to commit it'
+  b.title = shortcutText(!loc ? 'open a file from a repository to commit it'
     : !state.user ? 'sign in to commit'
       : canFork() ? 'you cannot push here: propose this change through a fork (Ctrl+S)'
-        : 'commit this file to GitHub (Ctrl+S)';
+        : 'commit this file to GitHub (Ctrl+S)', IS_MAC);
 }
 
 /** The user cannot push to the open repository, but can fork it and propose the change. */
@@ -573,7 +580,7 @@ const canFork = () => !!state.user && !!state.repo && !state.repo.canPush
 function onKeyDown(e) {
   const ta = src();
   const mod = e.ctrlKey || e.metaKey;
-  if (mod && !e.altKey) {
+  if (commandHeld(e, IS_MAC) && !e.altKey) {
     const k = e.key.toLowerCase();
     const map = { b: 'bold', i: 'italic', k: 'link', e: 'code', 1: 'h1', 2: 'h2', 3: 'h3' };
     if (map[k] && !e.shiftKey) {
@@ -701,10 +708,7 @@ function drawSource() {
   }
 
   const fresh = newEnd - a;
-  const blank = () => new Array(fresh).fill(null);
-  hl.states.splice(a + 1, oldEnd - a, ...blank());
-  hl.tokens.splice(a, oldEnd - a, ...blank());
-  hl.marks.splice(a, oldEnd - a, ...blank());
+  hl.marks.splice(a, oldEnd - a, ...new Array(fresh).fill(null));
   const added = Array.from({ length: fresh }, () => document.createElement('div'));
   const removed = hl.els.splice(a, oldEnd - a, ...added);
   for (const el of removed) el.remove();
@@ -713,25 +717,14 @@ function drawSource() {
   else (box.firstElementChild || box.appendChild(document.createElement('div'))).append(...added);
 
   if (colour) {
-    // from the line above (a setext heading looks at the next line) until the state
-    // after a line is what it was before the edit; if that is far (a code fence opened
-    // above the rest of the document), everything again
-    let i = Math.max(0, a - 1);
-    let st = hl.states[i];
-    while (i < n) {
-      if (i > newEnd + MANY) {
-        drawAll();
-        return;
-      }
-      const r = tokenizeLine(lines[i], st, lines[i + 1]);
-      hl.tokens[i] = r.tokens;
-      draw(i);
-      const settled = i + 1 >= newEnd && hl.states[i + 1] && stateKey(hl.states[i + 1]) === stateKey(r.state);
-      hl.states[i + 1] = r.state;
-      st = r.state;
-      i++;
-      if (settled) break;
+    // the lines whose colours may have changed; if that is far (a code fence opened above
+    // the rest of the document), everything again
+    const end = retokenize(lines, hl.tokens, hl.states, a, oldEnd, newEnd, MANY);
+    if (end < 0) {
+      drawAll();
+      return;
     }
+    for (let i = Math.max(0, a - 1); i < end; i++) draw(i);
   } else {
     for (let i = a; i < newEnd; i++) draw(i);
   }
@@ -764,9 +757,10 @@ function scrollHl() {
 
 // ---------------------------------------------------------------- find and replace
 //
-// Ctrl+F (Ctrl+H with replace) in the editor opens a bar above the text. The matches are
-// found by find.js; the current one is selected in the textarea, and all of them are
-// marked in the highlighted copy, which also tells where the current one is drawn.
+// Ctrl+F (Ctrl+H with replace; ⌘F, ⌥⌘F on macOS) in the editor opens a bar above the
+// text. The matches are found by find.js; the current one is selected in the textarea, and
+// all of them are marked in the highlighted copy, which also tells where the current one
+// is drawn.
 
 const find = {
   open: false,
@@ -906,7 +900,7 @@ function replaceCurrent() {
   }
   const r = replaceOne(ta.value, m, $('findInput').value, $('replaceInput').value, find.opts);
   if (r) {
-    find.anchor = r.end;
+    find.anchor = anchorAfter(r, m);
     applyEdit({ text: r.text, start: r.end, end: r.end });
   }
   searchText(true);
@@ -927,6 +921,8 @@ function replaceEvery() {
 
 function initFind() {
   const input = $('findInput');
+  // every tooltip's shortcuts as on macOS, when on it (⌘B, not Ctrl+B: ⌃B moves the caret)
+  for (const el of document.querySelectorAll('[title]')) el.title = shortcutText(el.title, IS_MAC);
   input.addEventListener('input', () => {
     searchText(true);
     drawSource();
@@ -955,13 +951,13 @@ function initFind() {
   $('replaceAll').addEventListener('click', replaceEvery);
   $('findOpen').addEventListener('click', () => openFind(false));
   $('findBar').addEventListener('keydown', (e) => {
-    const mod = e.ctrlKey || e.metaKey;
+    const mod = commandHeld(e, IS_MAC);
     if (e.key === 'Escape') {
       e.preventDefault();
       closeFind();
       return;
     }
-    const opt = e.altKey && !mod && { KeyC: 'caseSensitive', KeyW: 'wholeWord', KeyR: 'regex' }[e.code];
+    const opt = findOptionKey(keyInfo(e), IS_MAC);
     if (opt) {
       e.preventDefault();
       $('findBar').querySelector(`[data-find-opt="${opt}"]`).click();
@@ -2523,12 +2519,13 @@ export async function boot() {
     }
     // find and replace in the editor; elsewhere Ctrl+F stays the browser's own find
     const inEditor = e.target instanceof Element && e.target.closest('.editorpane');
-    if (mod && inEditor && !e.shiftKey && ((!e.altKey && /^[fh]$/i.test(e.key)) || (e.altKey && e.code === 'KeyF'))) {
+    const findKey = inEditor && findShortcut(keyInfo(e), IS_MAC);
+    if (findKey) {
       e.preventDefault();
-      openFind(e.altKey || e.key.toLowerCase() === 'h');
+      openFind(findKey === 'replace');
       return;
     }
-    if (!mod || e.altKey) return;
+    if (!commandHeld(e, IS_MAC) || e.altKey) return;
     const k = e.key.toLowerCase();
     if (k === 's') {
       e.preventDefault();

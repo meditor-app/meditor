@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { tokenizeLine, START, stateKey, rangesByLine, lineHtml, LONG_LINE } from '../src/mdsyntax.js';
+import {
+  tokenizeLine, tokenizeAll, retokenize, START, stateKey, rangesByLine, lineHtml, LONG_LINE,
+} from '../src/mdsyntax.js';
 
 // The tokens of each line of `text`, as "class:text" strings.
 function tok(text) {
@@ -48,6 +50,45 @@ test('code spans and fenced blocks', () => {
   assert.deepEqual(tok('> ```\n> x\n\n*y*'), [['qt:> ', 'fence:```'], ['qt:> ', 'code:x'], [], ['mk:*', 'em:y', 'mk:*']]);
   // indented in a list item
   assert.deepEqual(tok('- a\n  ```\n  b\n  ```').map((l) => l.at(-1)), ['li:-', 'fence:  ```', 'code:  b', 'fence:  ```']);
+});
+
+test('a fence indented 4 columns or more is one only in a list item', () => {
+  // an indented code block at the top level, or a paragraph carrying on
+  assert.deepEqual(tok('a\n\n    ```\nb'), [[], [], [], []]);
+  assert.deepEqual(tok('a\n    ```\n*b*')[2], ['mk:*', 'em:b', 'mk:*']);
+  assert.deepEqual(tok('\t```\n*b*')[1], ['mk:*', 'em:b', 'mk:*']);
+  assert.deepEqual(tok('   ```\nb\n   ```\nc'), [['fence:   ```'], ['code:b'], ['fence:   ```'], []]);
+  // as GitHub renders it: the fence belongs to the item
+  assert.deepEqual(tok('- item\n\n    ```js\n    x\n    ```\n*y*'),
+    [['li:-'], [], ['fence:    ```js'], ['code:    x'], ['fence:    ```'], ['mk:*', 'em:y', 'mk:*']]);
+  assert.deepEqual(tok('1. a\n   lazy\n\n      ```\n      x')[4], ['code:      x']);
+  // inside a top-level block, an indented fence does not close it
+  assert.deepEqual(tok('```\n    ```\nb\n```'), [['fence:```'], ['code:    ```'], ['code:b'], ['fence:```']]);
+  // a line at the margin after a blank line ends the list
+  assert.deepEqual(tok('- a\n\nb\n\n    ```\nc')[5], []);
+  // so does one indented less than the item's content (3 columns after '1. ')
+  assert.deepEqual(tok('1. a\n\n  b\n\n    ```\n*c*')[5], ['mk:*', 'em:c', 'mk:*']);
+  // 4 columns past the item's content are an indented code block in it
+  assert.deepEqual(tok('- a\n\n      ```\n*b*').slice(2), [[], ['mk:*', 'em:b', 'mk:*']]);
+  assert.deepEqual(tok('-     a\n\n      ```\n*b*').slice(2), [[], ['mk:*', 'em:b', 'mk:*']]);
+  // nested items: the inner one's content, or after a blank line the outer one's
+  assert.deepEqual(tok('- a\n  - b\n\n      ```\n      x\n      ```\n*c*').slice(3).map((l) => l.at(-1)),
+    ['fence:      ```', 'code:      x', 'fence:      ```', 'mk:*']);
+  assert.deepEqual(tok('- a\n  - b\n\n    ```\n    x\n    ```\n*c*').slice(3).map((l) => l.at(-1)),
+    ['fence:    ```', 'code:    x', 'fence:    ```', 'mk:*']);
+  // a list in a quote ends with the quote, and a lazy line carries on its paragraph
+  assert.deepEqual(tok('> - a\n\n    ```\n*b*').slice(2), [[], ['mk:*', 'em:b', 'mk:*']]);
+  assert.deepEqual(tok('> - a\n    ```\n*b*').slice(1), [[], ['mk:*', 'em:b', 'mk:*']]);
+  // but holds on in it, over a quoted blank line
+  assert.deepEqual(tok('> - a\n>\n>     ```\n>     x\n>     ```\n*c*').slice(2).map((l) => l.at(-1)),
+    ['fence:    ```', 'code:    x', 'fence:    ```', 'mk:*']);
+  // a fence at the margin under an item is no part of it, and opens all the same
+  assert.deepEqual(tok('- a\n```\nx\n```\n*c*').slice(1).map((l) => l.at(-1)), ['fence:```', 'code:x', 'fence:```', 'mk:*']);
+});
+
+test('a quote marker alone is a blank line in the quote', () => {
+  // no setext heading under it, as GitHub has it
+  assert.deepEqual(tok('>\n> ---')[1], ['qt:> ', 'mk:---']);
 });
 
 test('links, images, autolinks, definitions', () => {
@@ -105,4 +146,68 @@ test('lines as HTML: escaped, tokens and marks combined', () => {
   assert.equal(lineHtml('a <b> c', [[2, 5, 'html']], [[0, 3, 'hit']]),
     '<span class="hit">a </span><span class="html hit">&lt;</span><span class="html">b&gt;</span> c');
   assert.equal(lineHtml('', [], []), '');
+});
+
+// A small deterministic random number generator, so that a failure can be repeated.
+function rng(seed) {
+  let x = seed >>> 0 || 1;
+  return (n) => {
+    x ^= x << 13; x >>>= 0;
+    x ^= x >> 17;
+    x ^= x << 5; x >>>= 0;
+    return x % n;
+  };
+}
+
+test('tokenizing again after an edit gives what tokenizing everything does', () => {
+  const docs = [
+    'a\n\n```\nb\nc',
+    '---\ntitle: x\n---\n# H\n\ntext *em*\n===\n\n```js\ncode\n```\n\n- a\n\n    ```\n    x\n    ```\n',
+    'x <!-- a\nb\n-->\n> ```\n> q\n\n~~~\n```\n~~~\nTitle\n---\n<!-- one -->\n- [x] t\n  lazy',
+  ];
+  // the lines edits are made of: fences, comments, front matter, setext underlines, lists
+  const pieces = ['```', '~~~', '````', '<!--', '-->', '---', '...', '===', '', 'text', '- item', '    ```',
+    '> ```', '> x', '# h', '*a*', 'a <!-- b', 'c --> d', '  ```js', '\t```', '> - a', '>', '1. a', '  b',
+    '      ```', '  - b', '>     ```'];
+  for (let d = 0; d < docs.length; d++) {
+    const rand = rng(d + 7);
+    let lines = docs[d].split('\n');
+    let { tokens, states } = tokenizeAll(lines);
+    for (let step = 0; step < 400; step++) {
+      // replace lines [a, a + del) with `ins` new ones (deleting, inserting or both)
+      const a = rand(lines.length + 1);
+      const del = Math.min(rand(4), lines.length - a);
+      const ins = Array.from({ length: rand(4) }, () => pieces[rand(pieces.length)]);
+      if (!del && !ins.length) continue;
+      const next = [...lines.slice(0, a), ...ins, ...lines.slice(a + del)];
+      if (!next.length) next.push('');
+      // the changed range as the page finds it: common lines at the start and at the end
+      let s = 0;
+      while (s < next.length && s < lines.length && next[s] === lines[s]) s++;
+      let e = 0;
+      while (e < next.length - s && e < lines.length - s && next[next.length - 1 - e] === lines[lines.length - 1 - e]) e++;
+      const end = retokenize(next, tokens, states, s, lines.length - e, next.length - e);
+      const full = tokenizeAll(next);
+      const what = `doc ${d}, step ${step}: ${JSON.stringify(next.join('\n'))}`;
+      assert.ok(end >= next.length - e, what);
+      assert.deepEqual(tokens, full.tokens, what);
+      assert.deepEqual(states.map(stateKey), full.states.map(stateKey), what);
+      lines = next;
+    }
+  }
+  // the case that went wrong: deleting a fence line, newline and all
+  const lines = 'a\n\n```\nb\nc'.split('\n');
+  const { tokens, states } = tokenizeAll(lines);
+  lines.splice(2, 1);
+  retokenize(lines, tokens, states, 2, 3, 2);
+  assert.deepEqual(tokens, [[], [], [], []]);
+});
+
+test('a keystroke tokenizes only a few lines again; a fence opened far up, all or give up', () => {
+  const lines = Array.from({ length: 20000 }, (_, i) => (i % 10 ? `line *${i}* text` : ''));
+  const { tokens, states } = tokenizeAll(lines);
+  lines[5000] += 'x';
+  assert.ok(retokenize(lines, tokens, states, 5000, 5001, 5001) <= 5002);
+  lines[10] = '```';
+  assert.equal(retokenize(lines, tokens, states, 10, 11, 11, 300), -1);
 });

@@ -2,7 +2,8 @@
 // heading, list and quote markers, emphasis, code, links, HTML, front matter.
 //
 // Line by line, carrying a small state from one line to the next (inside a fenced block,
-// front matter or an HTML comment; whether the line above was paragraph text), so that the
+// front matter or an HTML comment; whether the line above was paragraph text; the list items
+// it is in, where a fence may be indented more), so that the
 // page re-tokenizes only the lines an edit touched and the few after it whose state
 // changed. A line also looks at the next one, for setext headings (text over === or ---).
 //
@@ -10,7 +11,9 @@
 // (transparent) text, so nothing here may change the width of a character.
 
 /**
- * @typedef {{first: boolean, fence: string, fq: boolean, front: boolean, comment: boolean, para: boolean}} LineState
+ * @typedef {{first: boolean, fence: string, fq: boolean, front: boolean, comment: boolean, para: boolean,
+ *   list: number[], lq: number}} LineState  list: the content columns of the list items the
+ *   line may be in, outermost first (never changed in place); lq: how many quotes they are in
  * @typedef {[number, number, string]} Token  [from, to, classes] within the line
  */
 
@@ -18,10 +21,10 @@
 export const LONG_LINE = 5000;
 
 /** The state before the first line. */
-export const START = Object.freeze({ first: true, fence: '', fq: false, front: false, comment: false, para: false });
+export const START = Object.freeze({ first: true, fence: '', fq: false, front: false, comment: false, para: false, list: Object.freeze([]), lq: 0 });
 
 /** Two states that tokenize the following lines alike compare equal by this. */
-export const stateKey = (s) => `${+s.first}${s.fence}|${+s.fq}${+s.front}${+s.comment}${+s.para}`;
+export const stateKey = (s) => `${+s.first}${s.fence}|${+s.fq}${+s.front}${+s.comment}${+s.para}${s.list.join(',')}>${s.lq}`;
 
 const RE = {
   front: /^---[ \t]*$/,
@@ -67,9 +70,10 @@ export function tokenizeLine(line, state = START, next = undefined) {
     if (!state.fq || q) {
       const at = q ? q[0].length : 0;
       const rest = line.slice(at);
-      const f = rest.match(/^[ \t]*(`{3,}|~{3,})[ \t]*$/);
+      const f = rest.match(/^([ \t]*)(`{3,}|~{3,})[ \t]*$/);
       if (q) out.push([0, at, 'qt']);
-      if (f && f[1][0] === state.fence[0] && f[1].length >= state.fence.length) {
+      if (f && f[2][0] === state.fence[0] && f[2].length >= state.fence.length
+        && fenceIndent(f[1], state, q ? quoteDepth(q[0]) : 0)) {
         out.push([at, len, 'fence']);
         return { tokens: out, state: { ...st, fence: '', fq: false } };
       }
@@ -101,6 +105,7 @@ export function tokenizeLine(line, state = START, next = undefined) {
   // a very long line (minified HTML, a data: URL) stays plain: thousands of spans in it would
   // cost more at every keystroke than the colours are worth
   if (len > LONG_LINE) {
+    if (from === 0 && !state.para) st.list = within(state.list, columns(line.match(/^[ \t]*/)[0]));
     st.para = from === 0;
     return { tokens: out, state: st };
   }
@@ -118,8 +123,19 @@ export function tokenizeLine(line, state = START, next = undefined) {
   const body = line.slice(at);
   let m;
   st.para = false;
+  // a quote marker alone: a blank line in the quote
+  if (quoted && !body.trim()) return { tokens: out, state: st };
+  // the list items this line is in: those it is indented into (or, below, all of them when
+  // it carries on a paragraph); none when it is in another quote than they are
+  const depth = from === 0 ? quoteDepth(line.slice(0, at)) : state.lq;
+  const indent = columns(body.match(/^[ \t]*/)[0]);
+  if (from === 0) {
+    st.list = depth === state.lq ? within(state.list, indent) : START.list;
+    st.lq = depth;
+  }
 
-  if (from === 0 && (m = body.match(RE.fence)) && !(m[2][0] === '`' && m[3].includes('`'))) {
+  if (from === 0 && (m = body.match(RE.fence)) && !(m[2][0] === '`' && m[3].includes('`'))
+    && fenceIndent(m[1], state, depth)) {
     out.push([at, len, 'fence']);
     st.fence = m[2];
     st.fq = quoted;
@@ -137,6 +153,13 @@ export function tokenizeLine(line, state = START, next = undefined) {
   } else if (from === 0 && (m = body.match(RE.list))) {
     const markEnd = at + m[0].length;
     out.push([at + m[1].length, markEnd, 'li']);
+    // the item's content starts after the marker and 1 to 4 spaces (1 when there are more,
+    // or nothing)
+    const mark = columns(m[1]) + m[2].length;
+    const after = body.slice(m[0].length);
+    const gap = columns(after.match(/^[ \t]*/)[0], mark) - mark;
+    const content = mark + (gap > 4 || !after.trim() ? 1 : gap);
+    st.list = [...st.list, content];
     let t = markEnd;
     const task = line.slice(markEnd).match(RE.task);
     if (task) {
@@ -158,8 +181,97 @@ export function tokenizeLine(line, state = START, next = undefined) {
       && !(quoted && !RE.quote.test(next));
     inline(line, at, len, heading ? 'hd' : '', out, st);
     st.para = from === 0;
+    // carrying on a paragraph (in an item, or lazily, even out of its quote): still in them
+    if (from === 0 && state.para) {
+      st.list = state.list;
+      st.lq = state.lq;
+    }
   }
   return { tokens: out, state: st };
+}
+
+/**
+ * Tokenize every line.
+ * @returns {{tokens: Token[][], states: LineState[]}} states[i] is the state line i starts
+ *   in, and states[lines.length] the one after the last
+ */
+export function tokenizeAll(lines) {
+  let st = START;
+  const states = [st];
+  const tokens = [];
+  for (let i = 0; i < lines.length; i++) {
+    const r = tokenizeLine(lines[i], st, lines[i + 1]);
+    tokens.push(r.tokens);
+    states.push((st = r.state));
+  }
+  return { tokens, states };
+}
+
+/**
+ * After an edit turned lines [a, oldEnd) into [a, newEnd) of `lines`, bring `tokens` and
+ * `states` (as tokenizeAll gives them, for the text before) up to date, in place. It
+ * tokenizes again from the line above the edit (a setext heading looks at the next line)
+ * until the state after a line at or past the edit is what the line after it started in
+ * before: from there on nothing changes. Gives up, returning -1, when that is more than
+ * `limit` lines past the edit (a code fence opened above the rest of the document); the
+ * caller then tokenizes everything. Otherwise returns the end of the lines tokenized again,
+ * which start at max(0, a - 1).
+ */
+export function retokenize(lines, tokens, states, a, oldEnd, newEnd, limit = Infinity) {
+  // shift the states after the edit to their new places, the lines in it unknown: from
+  // newEnd on, each is what its line started in before (the stop condition), except that
+  // when lines were only deleted, newEnd is a, whose state is still that of the line above:
+  // `boundary` stands for it then
+  const boundary = states[oldEnd];
+  if (newEnd > a) {
+    const fresh = new Array(newEnd - a - 1).fill(null);
+    if (oldEnd === a) fresh.push(boundary);
+    states.splice(a + 1, Math.max(0, oldEnd - a - 1), ...fresh);
+  } else {
+    states.splice(a + 1, oldEnd - a);
+  }
+  tokens.splice(a, oldEnd - a, ...new Array(newEnd - a).fill(null));
+  let i = Math.max(0, a - 1);
+  let st = states[i];
+  const n = lines.length;
+  while (i < n) {
+    if (i > newEnd + limit) return -1;
+    const r = tokenizeLine(lines[i], st, lines[i + 1]);
+    tokens[i] = r.tokens;
+    st = r.state;
+    i++;
+    const was = i === newEnd ? boundary : states[i];
+    states[i] = st;
+    if (i >= newEnd && stateKey(was) === stateKey(st)) break;
+  }
+  return i;
+}
+
+/** The column after `s` (spaces and tabs, tab stops every 4), starting at column `col`. */
+function columns(s, col = 0) {
+  for (const c of s) col = c === '\t' ? col + 4 - (col % 4) : col + 1;
+  return col;
+}
+
+/** How many quotes a line's quote markers open. */
+const quoteDepth = (q) => q.split('>').length - 1;
+
+/** The list items (by content column) a line indented `indent` columns is still in. */
+function within(list, indent) {
+  let k = list.length;
+  while (k && list[k - 1] > indent) k--;
+  return k === list.length ? list : list.slice(0, k);
+}
+
+/**
+ * Whether a fence may be indented `ws` in the state before its line, `depth` quotes deep: at
+ * most 3 columns past the content of the list item it is in (or the margin); 4 make an
+ * indented code block, or carry on a paragraph.
+ */
+function fenceIndent(ws, state, depth) {
+  const col = columns(ws);
+  const items = depth === state.lq ? within(state.list, col) : [];
+  return col - (items.length ? items[items.length - 1] : 0) <= 3;
 }
 
 const PUNCT = /[!-/:-@[-`{-~]/;
