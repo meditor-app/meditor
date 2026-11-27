@@ -21,6 +21,7 @@ import {
 import { tokenizeLine, retokenize, START, rangesByLine, lineHtml } from './mdsyntax.js';
 import { proposeChange } from './fork.js';
 import { proposeImagePath, imageMarkdown, referencedPaths, formatSize } from './images.js';
+import { Drafts, newFileText } from './drafts.js';
 
 const $ = (id) => document.getElementById(id);
 const IS_MAC = /mac|iphone|ipad/i.test(navigator.userAgentData?.platform || navigator.platform || '');
@@ -74,13 +75,15 @@ const store = {
   get(k, fallback = null) {
     try { const v = localStorage.getItem(k); return v === null ? fallback : JSON.parse(v); } catch { return fallback; }
   },
+  /** False when storage refused it (private mode, or full). */
   set(k, v) {
-    try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* private mode or full */ }
+    try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch { return false; }
   },
   del(k) {
     try { localStorage.removeItem(k); } catch { /* ignore */ }
   },
 };
+const drafts = new Drafts(store);
 
 const state = {
   gh: new GitHub(null),
@@ -135,7 +138,10 @@ async function busy(label, fn) {
     throw e;
   } finally {
     state.loading--;
-    if (!state.loading && $('status').textContent === label + '…') status('');
+    if (!state.loading && $('status').textContent === label + '…') {
+      status('');
+      draftWarning(); // what is only in this tab, said again
+    }
   }
 }
 
@@ -358,8 +364,10 @@ function openScratch() {
   state.loc = null;
   clearPending();
   state.doc = { base: null, sha: null, isNew: false };
-  setText(store.get(K.scratch, WELCOME));
+  setText(drafts.openScratch(K.scratch, WELCOME));
+  hideBanner();
   showDoc();
+  draftWarning();
 }
 
 async function openFile(loc) {
@@ -375,30 +383,25 @@ async function openFile(loc) {
   state.doc = file ? { base: file.text, sha: file.sha, isNew: false } : { base: '', sha: null, isNew: true };
   clearPending();
   rememberRecent(loc);
-  const draft = store.get(draftKey(loc));
+  // a new file starts with a heading, but is not a draft until the user types
+  const opened = drafts.openFile(draftKey(loc), state.doc, state.doc.isNew ? newFileText(loc.path) : '');
+  const { draft } = opened;
+  setText(opened.text);
   let banner = null;
-  if (draft && draft.text !== state.doc.base) {
-    if (draft.sha === state.doc.sha) {
-      setText(draft.text);
-      banner = { text: `Restored your unsaved changes from ${when(draft.at)}.`, actions: [['discard them', () => discardDraft()]] };
-    } else {
-      setText(state.doc.base);
-      banner = {
-        text: `You have unsaved changes from ${when(draft.at)}, but the file has changed on GitHub since.`,
-        actions: [['restore my version', () => { setText(draft.text, true); hideBanner(); }], ['discard it', () => discardDraft()]],
-      };
-    }
-  } else if (state.doc.isNew) {
-    const title = basename(loc.path).replace(/\.[^.]+$/, '').replace(/[-_]+/g, ' ');
-    setText(`# ${title.charAt(0).toUpperCase()}${title.slice(1)}\n\n`);
-  } else {
-    if (draft) store.del(draftKey(loc));
-    setText(state.doc.base);
+  if (opened.kind === 'restored') {
+    banner = { text: `Restored your unsaved changes from ${when(draft.at)}.`, actions: [['discard them', () => discardDraft()]] };
+  } else if (opened.kind === 'conflict') {
+    // the draft stays stored until one of these is chosen (or the file is committed)
+    banner = {
+      text: `You have unsaved changes from ${when(draft.at)}, but the file has changed on GitHub since.`,
+      actions: [['restore my version', () => { drafts.resolve(); setText(draft.text, true); hideBanner(); }], ['discard it', () => discardDraft()]],
+    };
   }
   showDoc();
   if (banner) showBanner(banner.text, banner.actions);
   else hideBanner();
-  if (state.doc.isNew) status(`${loc.path} is new: it will be created when you commit it.`, 'warn');
+  if (drafts.unstored) draftWarning();
+  else if (state.doc.isNew) status(`${loc.path} is new: it will be created when you commit it.`, 'warn');
   else status('');
   loadPending(loc, draft?.text);
   $('src').setSelectionRange(0, 0);
@@ -414,12 +417,13 @@ function when(t) {
 
 function discardDraft() {
   if (!state.loc) return;
-  store.del(draftKey(state.loc));
+  drafts.discard();
   forgetImages(draftKey(state.loc));
   clearPending();
   setText(state.doc.base, true);
   hideBanner();
   renderTree();
+  draftWarning();
 }
 
 function showBanner(text, actions = []) {
@@ -489,6 +493,7 @@ function applyEdit(r) {
     ta.value = r.text;
   }
   ta.setSelectionRange(r.start, r.end);
+  drafts.edit();
   onTextChanged();
 }
 
@@ -533,18 +538,50 @@ function onTextChanged() {
   renderTimer = setTimeout(() => renderPreview(), state.renderer === 'github' ? 1200 : big ? 300 : 60);
 }
 
+/** Stores the text as a draft, if the user changed it in this tab (see drafts.js). */
 function saveDraftNow() {
   clearTimeout(draftTimer);
-  const text = src().value;
-  if (!state.loc) {
-    store.set(K.scratch, text);
-    return;
-  }
-  const key = draftKey(state.loc);
-  const had = store.get(key) !== null;
-  if (text !== state.doc.base) store.set(key, { text, sha: state.doc.sha, at: Date.now() });
-  else store.del(key);
-  if (had !== (text !== state.doc.base)) renderTree();
+  // the tree marks files with a draft: rebuilt only when that changes (it is costly, and
+  // reopens directories the user closed)
+  const had = state.loc && store.get(drafts.key) !== null;
+  drafts.save(src().value);
+  if (state.loc && had !== (store.get(drafts.key) !== null)) renderTree();
+  draftWarning();
+}
+
+// Text that could not be stored stays in this tab; say so for as long as it is the case,
+// whichever document is open (the page also asks before it is closed).
+const DRAFT_WARN = {
+  full: () => 'This browser’s storage is full: your changes are not kept as a draft. Commit or download them before you leave.',
+  held: () => 'Your changes are not kept as a draft until you restore or discard the older one above.',
+  other: () => {
+    const names = [...drafts.memory.keys()].filter((k) => k !== drafts.key)
+      .map((k) => (k === K.scratch ? 'the scratchpad' : k.slice(k.indexOf(':', K.draft.length) + 1)));
+    return `Your changes to ${names.join(', ')} are only in this tab: they could not be kept as a draft. Open ${names.length > 1 ? 'them' : 'it'} again to commit or download them before you leave.`;
+  },
+};
+let draftWarned = '';
+function draftWarning() {
+  const why = drafts.unstored;
+  if (why) status((draftWarned = DRAFT_WARN[why]()), 'bad');
+  else if (draftWarned && $('status').textContent === draftWarned) status('');
+  if (!why) draftWarned = '';
+}
+
+/** Another tab stored a draft: show it in the file list, and offer it if it is of this document. */
+function onStorage(e) {
+  if (!e.key || (e.key !== K.scratch && !e.key.startsWith(K.draft))) return;
+  if (e.key.startsWith(K.draft) && (e.oldValue === null) !== (e.newValue === null)) renderTree();
+  let v = null;
+  try { v = e.newValue === null ? null : JSON.parse(e.newValue); } catch { return; }
+  const d = drafts.incoming(e.key, v, src().value);
+  if (!d) return;
+  // made on another version of the file: taking it, then committing, would undo a change
+  const stale = d.stale ? `, made on another version of it than the one open here (it has changed on GitHub)` : '';
+  showBanner(`Another tab or window saved changes to ${state.loc ? 'this file' : 'the scratchpad'} at ${when(d.at)}${stale}.`, [
+    ['show them', () => { setText(d.text); drafts.take(d); hideBanner(); draftWarning(); }],
+    ['keep mine', () => { drafts.keepMine(d); hideBanner(); saveDraftNow(); }],
+  ]);
 }
 
 const isDirty = () => !!state.loc && (state.doc.isNew || src().value !== state.doc.base);
@@ -1784,7 +1821,7 @@ async function doCommit() {
     } else {
       r = await busy('committing', () => state.gh.putFile(loc.owner, loc.name, loc.path, { text, message, branch, sha: state.doc.sha }));
     }
-    store.del(draftKey(loc));
+    drafts.committed(draftKey(loc), text, r.sha);
     forgetImages(draftKey(loc));
     const committed = new Map(imgs.map((i) => [i.path, i]));
     for (const [path, p] of state.pending) if (!committed.has(path)) URL.revokeObjectURL(p.url);
@@ -1806,6 +1843,7 @@ async function doCommit() {
       state.branches.push({ name: branch, sha: r.commit.sha });
       const next = { ...loc, ref: branch };
       state.loc = next;
+      drafts.rename(draftKey(next));
       rememberRecent(next);
       history.pushState(null, '', formatFragment(next));
       state.tree = { ...(await state.gh.tree(loc.owner, loc.name, branch)), ref: branch };
@@ -1821,6 +1859,7 @@ async function doCommit() {
       else URL.revokeObjectURL(i.url);
     }
     status('');
+    draftWarning();
     toast(note, 9000);
     showDoc();
   } catch (e) {
@@ -1874,7 +1913,7 @@ async function propose({ text, title, body, message }) {
     created: () => { forkBranchMade = key; },
   }));
   forkBranchMade = null;
-  store.del(draftKey(loc));
+  drafts.committed(draftKey(loc), text, r.sha);
   forgetImages(draftKey(loc));
   // the images are in the fork now: shown from what we have if it is private, else from it
   const committed = new Map(imgs.map((i) => [i.path, i]));
@@ -1896,10 +1935,12 @@ async function propose({ text, title, body, message }) {
   // to the pull request. The text is kept (state.loc is set first, so openFile leaves it).
   const next = { owner: r.fork.owner, name: r.fork.name, ref: branch, path: loc.path };
   state.loc = next;
+  drafts.rename(draftKey(next));
   rememberRecent(next);
   go(next);
   await routing;
   status('');
+  draftWarning();
   showDoc();
   toast(note, 12000);
   const pull = r.pull;
@@ -1913,6 +1954,7 @@ async function reloadKeepingText() {
   const f = await busy('loading the latest version', () => state.gh.getFile(loc.owner, loc.name, loc.path, loc.ref));
   if (!f) return;
   state.doc = { base: f.text, sha: f.sha, isNew: false };
+  drafts.rebase(f.text, f.sha);
   saveDraftNow();
   updateDirty();
   $('commitError').hidden = true;
@@ -2063,13 +2105,15 @@ async function doFileAction() {
     ? `Moved ${escapeHtml(path)} to ${escapeHtml(to)}${commit}.`
     : `Deleted ${escapeHtml(path)}${commit}.`, 9000);
   status('');
+  draftWarning();
 
   if (isOpen && act === 'move') {
     // the same text, under its new name: no need to read it again
     state.loc = { ...loc, path: to };
     rememberRecent(state.loc);
     history.replaceState(null, '', formatFragment(state.loc));
-    if (draft || isDirty()) saveDraftNow();
+    drafts.rename(draftKey(state.loc));
+    saveDraftNow();
     showDoc();
     if (state.doc.isNew) status(`${to} is new: it will be created when you commit it.`, 'warn');
   } else if (isOpen) {
@@ -2378,7 +2422,7 @@ export async function boot() {
 
   // editor
   const ta = src();
-  ta.addEventListener('input', onTextChanged);
+  ta.addEventListener('input', () => { drafts.edit(); onTextChanged(); });
   ta.addEventListener('keydown', onKeyDown);
   ta.addEventListener('paste', onPaste);
   ta.addEventListener('dragover', onDragOver);
@@ -2539,7 +2583,12 @@ export async function boot() {
   addEventListener('popstate', route);
   addEventListener('hashchange', route);
   addEventListener('pagehide', saveDraftNow);
-  addEventListener('beforeunload', saveDraftNow);
+  addEventListener('beforeunload', (e) => {
+    saveDraftNow();
+    // edits storage refused (or held back by a conflicting draft) would be lost: ask first
+    if (drafts.pending) e.preventDefault();
+  });
+  addEventListener('storage', onStorage);
 
   // tokens pasted before sign-in through GitHub existed
   const old = credStore.get(K.oldToken);
