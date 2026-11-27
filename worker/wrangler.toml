@@ -12,4 +12,4 @@ workers_dev = true
 # The GitHub App's client ID (public; it is in the page too).
 GITHUB_CLIENT_ID = "Iv23liYmOPookZ1BEEfi"
 # Pages allowed to use this relay, comma-separated.
-ALLOWED_ORIGINS = "https://ondrik.github.io,http://localhost:8000"
+ALLOWED_ORIGINS = "https://meditor-app.github.io,http://localhost:8000"

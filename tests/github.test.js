@@ -76,7 +76,7 @@ test('fragments round-trip', () => {
 });
 
 test('GitHub URLs', () => {
-  assert.deepEqual(parseGitHubUrl('ondrik/meditor'), { owner: 'ondrik', name: 'meditor' });
+  assert.deepEqual(parseGitHubUrl('meditor-app/meditor'), { owner: 'meditor-app', name: 'meditor' });
   assert.deepEqual(parseGitHubUrl('https://github.com/o/r.git'), { owner: 'o', name: 'r' });
   assert.deepEqual(parseGitHubUrl('https://github.com/o/r/blob/feat/x/docs/a.md#L3'), { owner: 'o', name: 'r', rest: 'feat/x/docs/a.md' });
   assert.equal(parseGitHubUrl('not a url'), null);
