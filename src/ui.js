@@ -1358,10 +1358,42 @@ function initTheme() {
   });
 }
 
+// ---------------------------------------------------------------- installing as an app
+//
+// The browser offers to install the page (manifest.webmanifest) when it qualifies; Chrome
+// and Edge let the page offer it too, with a button, through beforeinstallprompt. Other
+// browsers install from their own menu (Safari: Share → Add to Dock / Home Screen).
+
+let installPrompt = null;
+
+function initInstall() {
+  if ('serviceWorker' in navigator && location.protocol === 'https:') {
+    navigator.serviceWorker.register('sw.js').catch(() => { /* offline start just will not work */ });
+  }
+  addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    installPrompt = e;
+    $('install').hidden = false;
+  });
+  addEventListener('appinstalled', () => {
+    installPrompt = null;
+    $('install').hidden = true;
+    toast('meditor is installed: start it from your applications like any other.');
+  });
+  $('install').addEventListener('click', async () => {
+    if (!installPrompt) return;
+    installPrompt.prompt();
+    await installPrompt.userChoice.catch(() => null);
+    installPrompt = null;
+    $('install').hidden = true;
+  });
+}
+
 // ---------------------------------------------------------------- boot
 
 export async function boot() {
   initTheme();
+  initInstall();
   initSplits();
 
   const prefs = store.get(K.prefs, {});

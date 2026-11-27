@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <title>meditor</title>
+  <!-- the tile: ink, like quedit's primary buttons -->
+  <rect width="512" height="512" fill="#14202a"/>
+  <g transform="translate(256 256) scale(0.78) translate(-256 -256)">
+  <!-- left: the Markdown source -->
+  <rect x="64" y="104" width="176" height="304" rx="22" fill="#2b3a44"/>
+  <g stroke="#adbfca" stroke-width="20" stroke-linecap="round">
+    <path d="M100 164h40"/>
+    <path d="M100 216h104"/>
+    <path d="M100 264h76"/>
+    <path d="M100 312h104"/>
+    <path d="M100 360h56"/>
+  </g>
+  <!-- right: the page it becomes, an "m" in the accent -->
+  <rect x="272" y="104" width="176" height="304" rx="22" fill="#ffffff"/>
+  <path d="M308 336V244M308 270c0-30 50-30 50 0v66M358 270c0-30 50-30 50 0v66"
+        fill="none" stroke="#a1155b" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>

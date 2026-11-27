@@ -19,3 +19,7 @@ after quedit (`~/quedit`), whose palette and panel layout it shares.
   reaches `innerHTML`.
 - The rendered page's top-level blocks carry `data-line` (source line); scroll sync and task
   box toggling depend on it.
+- It installs as an app (`manifest.webmanifest`, `sw.js`). A new file in `src/` must also go
+  into `SHELL` in `sw.js` (a test checks), and a new top-level file the page needs must be
+  copied in `.github/workflows/pages.yml`. The PNG icons are rendered from `icons/icon.svg`
+  and `icons/icon-maskable.svg` with `rsvg-convert`.

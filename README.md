@@ -1,3 +1,5 @@
+<img src="icons/icon.svg" width="72" align="right" alt="">
+
 # meditor
 
 Edit the Markdown files of your GitHub repositories in the browser: the source on one side,
@@ -39,6 +41,20 @@ browser. The only server-side piece is a tiny relay that completes *Sign in with
   into it and download the result.
 - The address names the open file (`#repo=owner/name&ref=main&path=README.md`), so it can be
   bookmarked or shared.
+
+## Installing it as an app
+
+meditor can be installed like a desktop (or phone) application: its own window and icon,
+started from the dock or the applications menu, and it opens without a network — the
+scratchpad, drafts and recent files work offline; opening and committing files need GitHub.
+
+- **Chrome, Edge** (Windows, macOS, Linux, ChromeOS, Android): the **install app** button in
+  meditor's top bar, or the install icon at the right of the address bar.
+- **Safari** (macOS 14+): *File → Add to Dock*. **iPhone / iPad**: *Share → Add to Home Screen*.
+- **Firefox** has no app install on desktop; use it as a page.
+
+The installed app is the same site: it updates itself whenever it starts online, and shares
+the sign-in, drafts and recent files with the page in the same browser.
 
 ## Signing in
 
@@ -115,6 +131,8 @@ same files are what GitHub Pages serves.
 | `src/diff.js` | the line diff shown before committing |
 | `src/ui.js` | everything on the page; the only module that touches the DOM |
 | `src/app.css` | the look, shared with [quedit](https://quantum.fit.vut.cz/quedit/) |
+| `manifest.webmanifest`, `sw.js` | installing as an app, and starting offline |
+| `icons/` | the logo (`icon.svg`) and its PNG renderings for app icons |
 
 ### Deploying
 
