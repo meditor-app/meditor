@@ -16,7 +16,9 @@ browser. The only server-side piece is a tiny relay that completes *Sign in with
 - **Open a repository** with *open…* (`Ctrl+O`): pick one of yours, or paste a GitHub URL or
   `owner/name`. A link to a file (`https://github.com/owner/name/blob/main/docs/x.md`) opens
   that file. The file list on the left shows the branch's Markdown files; switch branches
-  above it, create a file with *＋ new*.
+  above it, create a file with *＋ new*. Hover over a file for *✎* (rename or move it) and
+  *✕* (delete it): each is one commit to the branch, and the file's draft and its place among
+  the recent files go with it.
 - **Edit** on the left, read on the right. The two panels scroll together (*sync scroll*);
   links between documents of the repository open in the editor, and images from the
   repository show, private ones included. Tick a task box in the rendered page and the

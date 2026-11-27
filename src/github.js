@@ -19,7 +19,11 @@ export class GitHubError extends Error {
 
 /** UTF-8 text to base64, as the contents API wants it. */
 export function encodeBase64(text) {
-  const bytes = new TextEncoder().encode(text);
+  return bytesToBase64(new TextEncoder().encode(text));
+}
+
+/** Bytes (a Uint8Array) to base64. */
+export function bytesToBase64(bytes) {
   let bin = '';
   for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
   return btoa(bin);
@@ -132,7 +136,7 @@ export class GitHub {
     return {
       truncated: !!t.truncated,
       entries: t.tree.filter((e) => e.type === 'blob' || e.type === 'tree')
-        .map((e) => ({ path: e.path, type: e.type === 'tree' ? 'dir' : 'file', sha: e.sha, size: e.size })),
+        .map((e) => ({ path: e.path, type: e.type === 'tree' ? 'dir' : 'file', sha: e.sha, size: e.size, mode: e.mode })),
     };
   }
 
@@ -178,6 +182,83 @@ export class GitHub {
     return this.request('DELETE', `/repos/${owner}/${name}/contents/${enc(path)}`, { body: { message, branch, sha } });
   }
 
+  /**
+   * Several files changed in one commit, through the Git Data API: the branch's head commit,
+   * new blobs, a new tree on top of the head's, a commit, and the branch moved to it. The
+   * contents API (putFile) can only make one commit per file.
+   *
+   * Each change is one of
+   *   { path, text }         a file with this text (created or replaced)
+   *   { path, blobBase64 }   a file with these bytes (an image)
+   *   { path, sha }          a file with a blob already in the repository (a move)
+   *   { path, delete: true } no file here any more
+   * plus, optionally, `mode` (default the plain file mode) and `expect`: the blob sha the path
+   * must have at the head (null: there must be no file), so that a change someone else made
+   * meanwhile is refused (409) rather than overwritten, as putFile does with `sha`.
+   *
+   * The branch is moved without forcing it: if someone pushed while this was being prepared,
+   * GitHub refuses and nothing is committed. Blobs and trees made on the way are left for
+   * GitHub to collect.
+   *
+   * @param {{message: string, changes: object[], expectedHead?: string}} c
+   *   `expectedHead`: refuse (409) unless the branch is still at this commit
+   * @returns {Promise<{sha: string, html_url: string, blobs: Record<string, string>}>}
+   *   the new commit, and the blob sha now at each path written
+   */
+  async commitChanges(owner, name, branch, { message, changes, expectedHead }) {
+    const R = `/repos/${owner}/${name}/git`;
+    if (!changes?.length) throw new Error('Nothing to commit.');
+    const ref = await this.request('GET', `${R}/ref/heads/${enc(branch)}`);
+    const head = ref.object.sha;
+    if (expectedHead && head !== expectedHead) throw moved(branch);
+    for (const c of changes) {
+      if (c.expect === undefined) continue;
+      const now = await this.blobSha(owner, name, c.path, head);
+      if (now !== c.expect) {
+        throw new GitHubError(409, c.expect === null
+          ? `${c.path} already exists on GitHub.`
+          : `${c.path} changed on GitHub since it was opened. Reload it (your text is kept as a draft) and commit again.`,
+        { path: c.path });
+      }
+    }
+    const base = await this.request('GET', `${R}/commits/${head}`);
+    const tree = [];
+    const blobs = {};
+    for (const c of changes) {
+      const entry = { path: c.path, mode: c.mode || '100644', type: 'blob' };
+      if (c.delete) entry.sha = null;
+      else if (c.sha) entry.sha = c.sha;
+      else {
+        const content = c.blobBase64 ?? encodeBase64(c.text);
+        entry.sha = (await this.request('POST', `${R}/blobs`, { body: { content, encoding: 'base64' } })).sha;
+      }
+      if (entry.sha) blobs[c.path] = entry.sha;
+      tree.push(entry);
+    }
+    const t = await this.request('POST', `${R}/trees`, { body: { base_tree: base.tree.sha, tree } });
+    const commit = await this.request('POST', `${R}/commits`, { body: { message, tree: t.sha, parents: [head] } });
+    try {
+      await this.request('PATCH', `${R}/refs/heads/${enc(branch)}`, { body: { sha: commit.sha, force: false } });
+    } catch (e) {
+      // 422 "Update is not a fast forward": the branch moved after we read it
+      if (e.status === 422 || e.status === 409) throw moved(branch);
+      throw e;
+    }
+    return { sha: commit.sha, html_url: commit.html_url, blobs };
+  }
+
+  /** The blob sha of the file at `path` in `ref`, null if there is none ('dir' for a directory). */
+  async blobSha(owner, name, path, ref) {
+    let f;
+    try {
+      f = await this.request('GET', `/repos/${owner}/${name}/contents/${enc(path)}?ref=${encodeURIComponent(ref)}`);
+    } catch (e) {
+      if (e.status === 404) return null;
+      throw e;
+    }
+    return Array.isArray(f) ? 'dir' : f.sha;
+  }
+
   /** A new branch starting where `from` (a branch name) is now. */
   async createBranch(owner, name, branch, from) {
     const ref = await this.request('GET', `/repos/${owner}/${name}/git/ref/heads/${enc(from)}`);
@@ -193,6 +274,10 @@ export class GitHub {
   renderMarkdown(text, context) {
     return this.request('POST', '/markdown', { body: { text, mode: 'gfm', context }, accept: 'text/html', raw: 'text' });
   }
+}
+
+function moved(branch) {
+  return new GitHubError(409, `Someone pushed to ${branch} while this was being committed, so GitHub refused it and nothing was committed. Try again.`, { moved: true });
 }
 
 function slimRepo(r) {

@@ -7,7 +7,7 @@ import { Auth, AuthError } from './auth.js';
 import { GITHUB_APP } from './config.js';
 import {
   parseFragment, formatFragment, parseGitHubUrl, splitRefPath, resolveRef, githubUrl, rawUrl,
-  dirname, basename, joinPath, addRecent, removeRecent, ago,
+  dirname, basename, joinPath, addRecent, removeRecent, renameRecent, ago,
 } from './links.js';
 import {
   wrap, togglePrefix, orderedList, taskList, heading, link, codeBlock, table, rule, indent,
@@ -233,6 +233,7 @@ function showAccount() {
     b.title = 'sign in to GitHub';
   }
   updateCommitButton();
+  renderTree(); // whether files can be renamed or deleted
 }
 
 function openSignin() {
@@ -814,6 +815,7 @@ function renderTree() {
     }
   } catch { /* no storage */ }
   for (const d of drafts) if (!files.includes(d)) files.push(d);
+  const cantChange = !state.user ? 'sign in to rename or delete files' : !repo.canPush ? 'you cannot push to this repository' : '';
 
   const fileNode = (path, label) => {
     const li = document.createElement('li');
@@ -824,7 +826,21 @@ function renderTree() {
     b.dataset.path = path;
     b.title = path;
     b.innerHTML = `<span class="ic">▤</span><span class="nm">${escapeHtml(label)}</span>${drafts.has(path) ? '<span class="draft" title="unsaved changes in this browser">●</span>' : ''}`;
-    li.append(b);
+    const acts = document.createElement('span');
+    acts.className = 'acts';
+    for (const [act, text, title, cls] of [['move', '✎', 'rename or move…', ''], ['delete', '✕', 'delete…', 'del']]) {
+      const a = document.createElement('button');
+      a.type = 'button';
+      a.className = cls;
+      a.dataset.act = act;
+      a.dataset.path = path;
+      a.textContent = text;
+      a.disabled = !!cantChange;
+      a.title = cantChange || `${title.replace('…', '')} ${path}…`;
+      a.setAttribute('aria-label', a.title);
+      acts.append(a);
+    }
+    li.append(b, acts);
     return li;
   };
 
@@ -886,6 +902,11 @@ function renderTree() {
 }
 
 function onTreeClick(e) {
+  const act = e.target.closest('button[data-act]');
+  if (act) {
+    openFileDialog(act.dataset.act, act.dataset.path);
+    return;
+  }
   const b = e.target.closest('button.node');
   if (!b) return;
   if (b.dataset.dir) {
@@ -1212,6 +1233,166 @@ async function reloadKeepingText() {
   $('commitNote').textContent = 'The diff now compares your text with the latest version on GitHub; committing replaces it with yours.';
 }
 
+// ---------------------------------------------------------------- rename, move, delete
+//
+// Each is one commit straight to the branch of the file list. A rename is made with the Git
+// Data API (commitChanges), so that the history shows one commit, not a delete and a create.
+// What this browser keeps about the file (its draft, its place in the recent files) follows
+// it. A file that is not on GitHub yet (a new file, or only a draft) is renamed or dropped
+// here only, without a commit.
+
+let fileAction = null; // { act: 'move'|'delete', path, entry }
+
+function openFileDialog(act, path) {
+  const repo = state.repo;
+  if (!repo || !state.tree) return;
+  if (!state.user || !repo.canPush) return;
+  const entry = state.tree.entries.find((e) => e.type === 'file' && e.path === path) || null;
+  fileAction = { act, path, entry };
+  const move = act === 'move';
+  $('fileVerb').textContent = move ? 'Rename or move' : 'Delete';
+  $('fileFrom').textContent = path;
+  $('fileToBox').hidden = !move;
+  $('fileTo').required = move;
+  $('fileTo').value = path;
+  $('fileMsgBox').hidden = !entry;
+  $('fileMsg').required = !!entry;
+  $('fileMsg').value = move ? '' : `Delete ${basename(path)}`;
+  $('fileMsg').dataset.edited = '';
+  $('fileError').hidden = true;
+  const go = $('fileGo');
+  go.textContent = move ? 'rename' : 'delete';
+  go.classList.toggle('danger', !move);
+  go.disabled = false;
+  const draft = store.get(draftKey({ owner: repo.owner, name: repo.name, ref: state.tree.ref, path }));
+  const open = state.loc?.path === path;
+  const unsaved = draft || (open && isDirty());
+  $('fileNote').textContent = !entry
+    ? (move ? 'It is not on GitHub yet: only the draft in this browser is renamed.' : 'It is not on GitHub yet: this discards the draft kept in this browser.')
+    : move ? `This commits straight to ${state.tree.ref}.${unsaved ? ' Your unsaved changes to it move with it.' : ''}`
+      : `This commits straight to ${state.tree.ref}.${unsaved ? ' Your unsaved changes to it are discarded.' : ''} The file stays in the branch's history.`;
+  $('fileDlg').showModal();
+  if (move) {
+    const i = $('fileTo');
+    const dir = dirname(path);
+    i.focus();
+    i.setSelectionRange(dir ? dir.length + 1 : 0, path.replace(/\.[^./]+$/, '').length);
+    suggestMoveMessage();
+  } else {
+    $('fileMsg').select();
+  }
+}
+
+/** The default message, kept in step with the new path until the user edits it. */
+function suggestMoveMessage() {
+  const msg = $('fileMsg');
+  if (msg.dataset.edited === '1' && msg.value) return;
+  const from = fileAction.path;
+  const to = joinPath('', $('fileTo').value.trim()) || '';
+  msg.value = !to || to === from ? '' : dirname(to) === dirname(from) ? `Rename ${basename(from)} to ${basename(to)}` : `Move ${from} to ${to}`;
+  msg.dataset.edited = '';
+}
+
+/** Why `to` cannot be the new path of `from`, or '' if it can. */
+function badMovePath(from, to) {
+  if (!to) return 'Give the new path.';
+  if (to === from) return 'That is where it is already.';
+  if (/\/$/.test(to)) return 'Give a file name, not a directory.';
+  const entries = state.tree.entries;
+  const hit = entries.find((e) => e.path === to);
+  if (hit) return hit.type === 'dir' ? `${to} is a directory.` : `There is already a file ${to}.`;
+  const parts = to.split('/');
+  for (let i = 1; i < parts.length; i++) {
+    const p = parts.slice(0, i).join('/');
+    if (entries.some((e) => e.type === 'file' && e.path === p)) return `${p} is a file, so it cannot hold others.`;
+  }
+  const repo = state.repo;
+  if (store.get(draftKey({ owner: repo.owner, name: repo.name, ref: state.tree.ref, path: to }))) return `You have a draft of ${to} in this browser; open it and commit or discard it first.`;
+  return '';
+}
+
+async function doFileAction() {
+  const { act, path, entry } = fileAction;
+  const repo = state.repo;
+  const ref = state.tree.ref;
+  const loc = { owner: repo.owner, name: repo.name, ref, path };
+  const isOpen = state.loc && draftKey(state.loc) === draftKey(loc);
+  if (isOpen) saveDraftNow();
+  const err = $('fileError');
+  err.hidden = true;
+  const to = act === 'move' ? joinPath('', $('fileTo').value.trim().replace(/^\/+/, '')) : null;
+  if (act === 'move') {
+    const why = badMovePath(path, to);
+    if (why) {
+      err.textContent = why;
+      err.hidden = false;
+      return;
+    }
+  }
+  const message = $('fileMsg').value.trim();
+  $('fileGo').disabled = true;
+  let r = null;
+  try {
+    if (entry) {
+      const changes = act === 'move'
+        ? [{ path, delete: true, expect: entry.sha }, { path: to, sha: entry.sha, mode: entry.mode, expect: null }]
+        : [{ path, delete: true, expect: entry.sha }];
+      r = await busy(act === 'move' ? `moving ${path}` : `deleting ${path}`,
+        () => state.gh.commitChanges(repo.owner, repo.name, ref, { message, changes }));
+    }
+  } catch (e) {
+    err.textContent = e.message;
+    err.hidden = false;
+    $('fileGo').disabled = false;
+    return;
+  }
+  $('fileDlg').close();
+
+  // what this browser keeps about the file follows it
+  const draft = store.get(draftKey(loc));
+  store.del(draftKey(loc));
+  if (act === 'move') {
+    if (draft) store.set(draftKey({ ...loc, path: to }), draft);
+    store.set(K.recent, renameRecent(store.get(K.recent, []), loc, to));
+    if (entry) {
+      entry.path = to;
+      // the directories it may have moved into, for the checks of the next move
+      const parts = to.split('/');
+      for (let i = 1; i < parts.length; i++) {
+        const d = parts.slice(0, i).join('/');
+        if (!state.tree.entries.some((e) => e.path === d)) state.tree.entries.push({ path: d, type: 'dir' });
+      }
+    }
+  } else {
+    store.set(K.recent, removeRecent(store.get(K.recent, []), loc));
+    if (entry) state.tree.entries = state.tree.entries.filter((e) => e !== entry);
+  }
+
+  const commit = r ? ` in <a href="${escapeHtml(r.html_url)}" target="_blank" rel="noopener">${r.sha.slice(0, 7)}</a>` : '';
+  toast(act === 'move'
+    ? `Moved ${escapeHtml(path)} to ${escapeHtml(to)}${commit}.`
+    : `Deleted ${escapeHtml(path)}${commit}.`, 9000);
+  status('');
+
+  if (isOpen && act === 'move') {
+    // the same text, under its new name: no need to read it again
+    state.loc = { ...loc, path: to };
+    rememberRecent(state.loc);
+    history.replaceState(null, '', formatFragment(state.loc));
+    if (draft || isDirty()) saveDraftNow();
+    showDoc();
+    if (state.doc.isNew) status(`${to} is new: it will be created when you commit it.`, 'warn');
+  } else if (isOpen) {
+    // nothing to show any more: leave it without keeping a draft of it, and open another file
+    clearTimeout(draftTimer);
+    state.loc = null;
+    openScratch();
+    go({ owner: repo.owner, name: repo.name, ref }, true);
+  } else {
+    renderTree();
+  }
+}
+
 // ---------------------------------------------------------------- new file, download
 
 function openNewDialog() {
@@ -1529,6 +1710,17 @@ export async function boot() {
   });
   $('showDiff').addEventListener('click', showDiff);
   $('prBranch').addEventListener('focus', () => { document.querySelector('input[name="target"][value="pr"]').checked = true; });
+
+  // rename, move, delete
+  $('fileForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    doFileAction();
+  });
+  $('fileTo').addEventListener('input', () => {
+    $('fileError').hidden = true;
+    suggestMoveMessage();
+  });
+  $('fileMsg').addEventListener('input', () => { $('fileMsg').dataset.edited = '1'; });
 
   // new file
   $('newForm').addEventListener('submit', (e) => {
