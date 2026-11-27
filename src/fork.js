@@ -55,7 +55,9 @@ export async function findFork(gh, up, login) {
  * @param {import('./github.js').GitHub} gh
  * @param {{upstream: {owner: string, name: string, ref: string, path: string}, login: string,
  *   branch: string, text: string, message: string, sha: string|null, title: string, body: string,
- *   installUrl?: string, resume?: boolean}} o
+ *   installUrl?: string, resume?: boolean, images?: {path: string, blobBase64: string}[]}} o
+ *   `images`: pasted images to commit with the document (in the same commit; each must be
+ *   new, as for a direct commit)
  *   `resume`: an earlier attempt created `branch` in the fork and failed after that (the
  *   branch holds nothing of the user's), so take it over rather than refuse
  * @param {{progress?(text: string): void, created?(fork: object, branch: string): void,
@@ -147,7 +149,14 @@ export async function proposeChange(gh, o, env = {}) {
   say(`committing to ${fork.full} @ ${o.branch}`);
   let put;
   try {
-    put = await gh.putFile(fork.owner, fork.name, up.path, { text: o.text, message: o.message, branch: o.branch, sha: o.sha });
+    if (o.images?.length) {
+      const changes = [{ path: up.path, text: o.text, expect: o.sha ?? null }];
+      for (const i of o.images) changes.push({ path: i.path, blobBase64: i.blobBase64, expect: null });
+      const c = await gh.commitChanges(fork.owner, fork.name, o.branch, { message: o.message, changes });
+      put = { sha: c.blobs[up.path], commit: { sha: c.sha, html_url: c.html_url } };
+    } else {
+      put = await gh.putFile(fork.owner, fork.name, up.path, { text: o.text, message: o.message, branch: o.branch, sha: o.sha });
+    }
   } catch (e) {
     throw cannotWrite(e);
   }

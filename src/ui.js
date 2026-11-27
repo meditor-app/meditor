@@ -2,7 +2,7 @@
 // The only module that touches the DOM.
 
 import { renderMarkdown, sanitizeHtml, escapeHtml, ID_PREFIX } from './markdown.js';
-import { GitHub, MARKDOWN_EXT } from './github.js';
+import { GitHub, MARKDOWN_EXT, bytesToBase64 } from './github.js';
 import { Auth, AuthError } from './auth.js';
 import { GITHUB_APP } from './config.js';
 import {
@@ -15,6 +15,7 @@ import {
 } from './edit.js';
 import { lineDiff } from './diff.js';
 import { proposeChange } from './fork.js';
+import { proposeImagePath, imageMarkdown, referencedPaths, formatSize } from './images.js';
 
 const $ = (id) => document.getElementById(id);
 const K = {
@@ -84,6 +85,7 @@ const state = {
   view: 'split',
   sync: true,
   images: new Map(), // repo image path -> object URL (private repositories)
+  pending: new Map(), // pasted images of the open document, not committed yet (see loadPending)
   loading: 0,
 };
 
@@ -335,6 +337,7 @@ async function applyLocation(loc) {
 function openScratch() {
   if (state.loc) saveDraftNow();
   state.loc = null;
+  clearPending();
   state.doc = { base: null, sha: null, isNew: false };
   setText(store.get(K.scratch, WELCOME));
   showDoc();
@@ -351,6 +354,7 @@ async function openFile(loc) {
   }
   state.loc = loc;
   state.doc = file ? { base: file.text, sha: file.sha, isNew: false } : { base: '', sha: null, isNew: true };
+  clearPending();
   rememberRecent(loc);
   const draft = store.get(draftKey(loc));
   let banner = null;
@@ -377,6 +381,7 @@ async function openFile(loc) {
   else hideBanner();
   if (state.doc.isNew) status(`${loc.path} is new: it will be created when you commit it.`, 'warn');
   else status('');
+  loadPending(loc, draft?.text);
   $('src').setSelectionRange(0, 0);
   $('src').scrollTop = 0;
   $('previewScroll').scrollTop = 0;
@@ -391,6 +396,8 @@ function when(t) {
 function discardDraft() {
   if (!state.loc) return;
   store.del(draftKey(state.loc));
+  forgetImages(draftKey(state.loc));
+  clearPending();
   setText(state.doc.base, true);
   hideBanner();
   renderTree();
@@ -577,6 +584,155 @@ function onKeyDown(e) {
   }
 }
 
+// ---------------------------------------------------------------- pasted images
+//
+// An image pasted or dropped into the source goes next to the document (see images.js): its
+// link is inserted at once, the preview shows it from an object URL, and it is committed with
+// the document, in the same commit. Until then it is kept with the draft, in IndexedDB (local
+// storage holds strings, and too few of them for images), under the draft's key. Images whose
+// link is gone by the time of the commit are left out, and forgotten.
+
+const IDB = { name: 'meditor', store: 'images' };
+let idb = null;
+
+function openIdb() {
+  if (!idb) {
+    idb = new Promise((resolve, reject) => {
+      const req = indexedDB.open(IDB.name, 1);
+      req.onupgradeneeded = () => req.result.createObjectStore(IDB.store, { keyPath: 'id' }).createIndex('doc', 'doc');
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    idb.catch(() => { idb = null; });
+  }
+  return idb;
+}
+
+/** Runs `fn(store)` in a transaction; resolves with the result of the request `fn` returned, once done. */
+async function idbDo(mode, fn) {
+  const db = await openIdb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB.store, mode);
+    const r = fn(tx.objectStore(IDB.store));
+    tx.oncomplete = () => resolve(r?.result);
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  });
+}
+
+const imageId = (doc, path) => `${doc}\n${path}`;
+const imagesOf = (doc) => idbDo('readonly', (s) => s.index('doc').getAll(doc)).catch(() => []);
+/** Forgets the images kept for the draft `doc` (only those at `paths`, if given). */
+const forgetImages = (doc, paths = null) => idbDo('readwrite', (s) => {
+  const req = s.index('doc').openCursor(IDBKeyRange.only(doc));
+  req.onsuccess = () => {
+    const c = req.result;
+    if (!c) return;
+    if (!paths || paths.includes(c.value.path)) c.delete();
+    c.continue();
+  };
+}).catch(() => {});
+
+/** Lets go of the open document's pending images (they stay in IndexedDB). */
+function clearPending() {
+  for (const p of state.pending.values()) URL.revokeObjectURL(p.url);
+  state.pending = new Map();
+}
+
+const pendingEntry = (blob, rel) => ({ blob, rel, url: URL.createObjectURL(blob) });
+
+/** After opening a file: its images from an earlier visit, less those its text no longer links. */
+async function loadPending(loc, draftText) {
+  const doc = draftKey(loc);
+  const recs = await imagesOf(doc);
+  if (!state.loc || draftKey(state.loc) !== doc || !recs.length) return;
+  const used = new Set([...referencedPaths(src().value, loc.path), ...referencedPaths(draftText || '', loc.path)]);
+  const gone = [];
+  for (const r of recs) {
+    if (!used.has(r.path)) gone.push(r.path);
+    else if (!state.pending.has(r.path)) state.pending.set(r.path, pendingEntry(r.blob, r.rel));
+  }
+  if (gone.length) forgetImages(doc, gone);
+  if (state.pending.size) renderPreview(true);
+}
+
+/** The pending images the text still links to, in the order they were pasted. */
+function imagesToCommit() {
+  if (!state.loc || !state.pending.size) return [];
+  const used = referencedPaths(src().value, state.loc.path);
+  return [...state.pending].filter(([path]) => used.has(path)).map(([path, p]) => ({ path, ...p }));
+}
+
+function onPaste(e) {
+  const files = [...(e.clipboardData?.files || [])].filter((f) => f.type.startsWith('image/'));
+  if (!files.length) return;
+  e.preventDefault();
+  addImages(files);
+}
+
+function onDragOver(e) {
+  if (![...(e.dataTransfer?.types || [])].includes('Files')) return;
+  e.preventDefault(); // or the browser opens the file in place of the editor
+  e.dataTransfer.dropEffect = 'copy';
+}
+
+function onDrop(e) {
+  const all = [...(e.dataTransfer?.files || [])];
+  if (!all.length) return;
+  e.preventDefault();
+  const files = all.filter((f) => f.type.startsWith('image/'));
+  if (files.length) addImages(files);
+  else toast('Only images can be dropped into the text.');
+}
+
+function addImages(files) {
+  const loc = state.loc;
+  if (!loc) {
+    toast('An image goes into a repository with the document that shows it: open a file from a repository first.');
+    return;
+  }
+  if (state.repo && !state.repo.canPush) {
+    toast(canFork()
+      ? 'You cannot push to this repository: “fork and propose” will commit the image with the document in your fork.'
+      : 'You cannot push to this repository, so the image cannot be committed with the document.');
+  }
+  const inTree = new Set((state.tree?.entries || []).map((e) => e.path.toLowerCase()));
+  const taken = (p) => inTree.has(p.toLowerCase()) || [...state.pending.keys()].some((k) => k.toLowerCase() === p.toLowerCase());
+  const doc = draftKey(loc);
+  const rels = [];
+  for (const f of files) {
+    const { path, rel } = proposeImagePath(loc.path, f, taken);
+    const blob = f.slice(0, f.size, f.type); // a Blob: IndexedDB need not keep the File's name
+    state.pending.set(path, pendingEntry(blob, rel));
+    rels.push(rel);
+    idbDo('readwrite', (s) => s.put({ id: imageId(doc, path), doc, path, rel, blob, at: Date.now() }))
+      .catch(() => status('This browser cannot keep the image for later (no IndexedDB): commit it before closing the page.', 'warn'));
+  }
+  const { text, start, end } = sel();
+  const md = imageMarkdown(rels);
+  applyEdit({ text: text.slice(0, start) + md + text.slice(end), start: start + md.length, end: start + md.length });
+  renderPreview(true);
+  status(`${rels.length === 1 ? rels[0] : `${rels.length} images`} will be committed with ${basename(loc.path)}.`);
+}
+
+/** A renamed document's images: re-keyed, and moved with it so that their links still hold. */
+async function movePending(from, to) {
+  const recs = await imagesOf(draftKey(from));
+  if (!recs.length) return;
+  const doc = draftKey(to);
+  const moved = recs.map((r) => {
+    const path = joinPath(dirname(to.path), r.rel);
+    return { ...r, doc, path, id: imageId(doc, path) };
+  });
+  await forgetImages(draftKey(from));
+  await idbDo('readwrite', (s) => { for (const r of moved) s.put(r); }).catch(() => {});
+  if (state.loc && draftKey(state.loc) === doc) {
+    clearPending();
+    for (const r of moved) state.pending.set(r.path, pendingEntry(r.blob, r.rel));
+    renderPreview(true);
+  }
+}
+
 // ---------------------------------------------------------------- the preview
 
 function resolveImage(url) {
@@ -584,6 +740,7 @@ function resolveImage(url) {
   if (!loc) return { src: url };
   const r = resolveRef(url, loc);
   if (r.kind !== 'repo') return { src: url };
+  if (state.pending.has(r.path)) return { src: state.pending.get(r.path).url };
   if (state.repo && !state.repo.private) return { src: rawUrl(loc, r.path) };
   const key = `${loc.owner}/${loc.name}@${loc.ref}:${r.path}`;
   return { src: state.images.get(key) || PIXEL, path: r.path };
@@ -1141,6 +1298,14 @@ function openCommitDialog() {
   }
   const repo = state.repo;
   $('commitPath').textContent = loc.path;
+  const imgs = imagesToCommit();
+  $('commitImages').hidden = !imgs.length;
+  $('commitImages').replaceChildren(...imgs.map((i) => {
+    const li = document.createElement('li');
+    li.innerHTML = `<span class="mono">＋ ${escapeHtml(i.path)}</span> <span class="help">${formatSize(i.blob.size)}</span>`;
+    return li;
+  }));
+  $('commitWith').textContent = imgs.length ? ` and ${imgs.length === 1 ? 'an image' : `${imgs.length} images`}` : '';
   $('commitBranch').textContent = loc.ref;
   $('commitMsg').value = `${state.doc.isNew ? 'Create' : 'Update'} ${basename(loc.path)}`;
   $('commitBody').value = '';
@@ -1174,7 +1339,9 @@ function showDiff() {
   const pre = $('diff');
   if (!pre.hidden) { pre.hidden = true; return; }
   const d = lineDiff(state.doc.base, src().value);
-  pre.innerHTML = d.map(({ op, line }) => {
+  const imgs = imagesToCommit().map((i) => `<span class="file">new image ${escapeHtml(i.path)} (${formatSize(i.blob.size)})</span>`);
+  if (imgs.length) imgs.push(`<span class="file">${escapeHtml(state.loc.path)}</span>`);
+  pre.innerHTML = imgs.join('') + d.map(({ op, line }) => {
     if (op === '…') return '<span class="gap">⋯</span>';
     const cls = op === '+' ? 'add' : op === '-' ? 'del' : '';
     return cls ? `<span class="${cls}">${op} ${escapeHtml(line)}</span>` : `  ${escapeHtml(line)}\n`;
@@ -1204,8 +1371,25 @@ async function doCommit() {
       if (!branch) throw new Error('Name the new branch.');
       await busy(`creating branch ${branch}`, () => state.gh.createBranch(loc.owner, loc.name, branch, loc.ref));
     }
-    const r = await busy('committing', () => state.gh.putFile(loc.owner, loc.name, loc.path, { text, message, branch, sha: state.doc.sha }));
+    const imgs = imagesToCommit();
+    let r;
+    if (imgs.length) {
+      // the document and its images in one commit; the document must still be as it was
+      // opened (or still not exist), as putFile checks with `sha`
+      const changes = [{ path: loc.path, text, expect: state.doc.isNew ? null : state.doc.sha }];
+      for (const i of imgs) {
+        changes.push({ path: i.path, blobBase64: bytesToBase64(new Uint8Array(await i.blob.arrayBuffer())), expect: null });
+      }
+      const c = await busy('committing', () => state.gh.commitChanges(loc.owner, loc.name, branch, { message, changes }));
+      r = { sha: c.blobs[loc.path], commit: { sha: c.sha, html_url: c.html_url } };
+    } else {
+      r = await busy('committing', () => state.gh.putFile(loc.owner, loc.name, loc.path, { text, message, branch, sha: state.doc.sha }));
+    }
     store.del(draftKey(loc));
+    forgetImages(draftKey(loc));
+    const committed = new Map(imgs.map((i) => [i.path, i]));
+    for (const [path, p] of state.pending) if (!committed.has(path)) URL.revokeObjectURL(p.url);
+    state.pending = new Map();
     const wasNew = state.doc.isNew;
     state.doc = { base: text, sha: r.sha, isNew: false };
     $('commitDlg').close();
@@ -1227,8 +1411,15 @@ async function doCommit() {
       history.pushState(null, '', formatFragment(next));
       state.tree = { ...(await state.gh.tree(loc.owner, loc.name, branch)), ref: branch };
       renderBranches();
-    } else if (wasNew && state.tree) {
-      state.tree.entries.push({ path: loc.path, type: 'file', sha: r.sha });
+    } else if (state.tree) {
+      if (wasNew) state.tree.entries.push({ path: loc.path, type: 'file', sha: r.sha });
+      for (const path of committed.keys()) state.tree.entries.push({ path, type: 'file' });
+    }
+    // the images are in the repository now; a private one's are shown from what we have
+    for (const [path, i] of committed) {
+      const key = `${state.loc.owner}/${state.loc.name}@${state.loc.ref}:${path}`;
+      if (state.repo?.private && !state.images.has(key)) state.images.set(key, i.url);
+      else URL.revokeObjectURL(i.url);
     }
     status('');
     toast(note, 9000);
@@ -1246,7 +1437,7 @@ async function doCommit() {
       a.textContent = `${label} ↗`;
       err.append(' ', a);
     }
-    if (e.status === 409) {
+    if (e.status === 409 && (e.body?.path || loc.path) === loc.path && !e.body?.moved) {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.textContent = 'load the latest version';
@@ -1273,15 +1464,28 @@ async function propose({ text, title, body, message }) {
   if (!branch) throw new Error('Name the new branch.');
   const key = `${loc.owner}/${loc.name}@${loc.ref}:${branch}`;
   const shown = $('commitProgress');
+  const imgs = imagesToCommit();
+  const images = [];
+  for (const i of imgs) images.push({ path: i.path, blobBase64: bytesToBase64(new Uint8Array(await i.blob.arrayBuffer())) });
   const r = await busy('proposing the change', () => proposeChange(state.gh, {
     upstream: loc, login: state.user.login, branch, text, message, sha: state.doc.sha, title, body,
-    installUrl: installUrl(), resume: forkBranchMade === key,
+    installUrl: installUrl(), resume: forkBranchMade === key, images,
   }, {
     progress: (t) => { shown.textContent = `${t}…`; shown.hidden = false; },
     created: () => { forkBranchMade = key; },
   }));
   forkBranchMade = null;
   store.del(draftKey(loc));
+  forgetImages(draftKey(loc));
+  // the images are in the fork now: shown from what we have if it is private, else from it
+  const committed = new Map(imgs.map((i) => [i.path, i]));
+  for (const [path, p] of state.pending) if (!committed.has(path)) URL.revokeObjectURL(p.url);
+  state.pending = new Map();
+  for (const [path, i] of committed) {
+    const k = `${r.fork.owner}/${r.fork.name}@${branch}:${path}`;
+    if (r.fork.private && !state.images.has(k)) state.images.set(k, i.url);
+    else URL.revokeObjectURL(i.url);
+  }
   state.doc = { base: text, sha: r.sha, isNew: false };
   $('commitDlg').close();
   hideBanner();
@@ -1438,6 +1642,7 @@ async function doFileAction() {
   store.del(draftKey(loc));
   if (act === 'move') {
     if (draft) store.set(draftKey({ ...loc, path: to }), draft);
+    movePending(loc, { ...loc, path: to });
     store.set(K.recent, renameRecent(store.get(K.recent, []), loc, to));
     if (entry) {
       entry.path = to;
@@ -1449,6 +1654,7 @@ async function doFileAction() {
       }
     }
   } else {
+    forgetImages(draftKey(loc));
     store.set(K.recent, removeRecent(store.get(K.recent, []), loc));
     if (entry) state.tree.entries = state.tree.entries.filter((e) => e !== entry);
   }
@@ -1699,6 +1905,9 @@ export async function boot() {
   const ta = src();
   ta.addEventListener('input', onTextChanged);
   ta.addEventListener('keydown', onKeyDown);
+  ta.addEventListener('paste', onPaste);
+  ta.addEventListener('dragover', onDragOver);
+  ta.addEventListener('drop', onDrop);
   for (const ev of ['keyup', 'click', 'select']) ta.addEventListener(ev, updateStats);
   ta.addEventListener('scroll', () => syncFrom('editor'), { passive: true });
   $('previewScroll').addEventListener('scroll', () => syncFrom('preview'), { passive: true });

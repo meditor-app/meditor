@@ -236,3 +236,32 @@ test('pull request heads and compare pages for forks', () => {
   assert.equal(isForkOf({ parent: 'Me/Docs' }, { owner: 'me', name: 'docs' }), true);
   assert.equal(isForkOf({ parent: null }, { owner: 'me', name: 'docs' }), false);
 });
+
+test('pasted images go into the fork in the same commit as the document', async () => {
+  const f = fake({
+    'GET /repos/me/docs/git/ref/heads/main': ref('up1'),
+    'GET /repos/tester/docs': { body: FORK },
+    'GET /repos/tester/docs/git/ref/heads/main': ref('old'),
+    'POST /repos/tester/docs/git/refs': { status: 201, body: {} },
+    'GET /repos/tester/docs/git/ref/heads/guide-x1': ref('up1'),
+    'GET /repos/tester/docs/contents/docs/guide.md?ref=up1': { body: { type: 'file', sha: 'g1' } },
+    'GET /repos/tester/docs/contents/docs/shot.png?ref=up1': { status: 404, body: { message: 'Not Found' } },
+    'GET /repos/tester/docs/git/commits/up1': { body: { tree: { sha: 't0' } } },
+    'POST /repos/tester/docs/git/blobs': (init) => ({ status: 201, body: { sha: JSON.parse(init.body).encoding === 'base64' && JSON.parse(init.body).content === 'iVBORw==' ? 'b-img' : 'b-doc' } }),
+    'POST /repos/tester/docs/git/trees': { status: 201, body: { sha: 't1' } },
+    'POST /repos/tester/docs/git/commits': { status: 201, body: { sha: 'c9', html_url: 'https://github.com/tester/docs/commit/c9' } },
+    'PATCH /repos/tester/docs/git/refs/heads/guide-x1': { body: {} },
+    'POST /repos/me/docs/pulls': pull,
+  });
+  const r = await proposeChange(new GitHub('T', f), { ...change, images: [{ path: 'docs/shot.png', blobBase64: 'iVBORw==' }] }, noWait);
+  assert.equal(r.sha, 'b-doc');
+  assert.equal(r.commit.sha, 'c9');
+  assert.ok(!f.calls.some((c) => c.startsWith('PUT ')), 'no single-file commit');
+  const tree = JSON.parse(f.calls.find((c) => c.startsWith('POST /repos/tester/docs/git/trees')).replace(/^\S+ \S+ /, ''));
+  assert.deepEqual(tree, { base_tree: 't0', tree: [
+    { path: 'docs/guide.md', mode: '100644', type: 'blob', sha: 'b-doc' },
+    { path: 'docs/shot.png', mode: '100644', type: 'blob', sha: 'b-img' },
+  ] });
+  assert.ok(f.calls.includes('PATCH /repos/tester/docs/git/refs/heads/guide-x1 {"sha":"c9","force":false}'));
+  assert.equal(r.pull.number, 7);
+});
