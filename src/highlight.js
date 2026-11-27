@@ -134,15 +134,31 @@ function stringEnd(s, i, q, multi) {
 }
 
 /** Shell double-quoted strings and bare words: `$VAR`, `${…}`, `$1`, `$?` stand out. */
-const SH_VAR = /\$(?:\{[^}\n]*\}|[A-Za-z_]\w*|[0-9#?@*!$-])/y;
+const SH_VAR = /\$(?:[A-Za-z_]\w*|[0-9#?@*!$-])/y;
+
+/**
+ * The shell variable starting at s[k] (a `$`), or null. `${…}` runs to the next `}` on the
+ * line; `memo` remembers the next `}` and line end found so far, so that a run of unclosed
+ * `${` is not searched to the end of the line again and again.
+ */
+function shVar(s, k, memo) {
+  if (s[k + 1] !== '{') return stick(SH_VAR, s, k);
+  const next = (key, ch) => {
+    if (memo[key] < k) { const e = s.indexOf(ch, k); memo[key] = e < 0 ? Infinity : e; }
+    return memo[key];
+  };
+  const close = next('close', '}');
+  return close < next('nl', '\n') ? s.slice(k, close + 1) : null;
+}
 
 function shellString(body) {
+  const memo = { close: -1, nl: -1 };
   let out = '';
   let last = 0;
   for (let k = 0; k < body.length; k++) {
     if (body[k] === '\\') { k++; continue; }
     if (body[k] !== '$') continue;
-    const v = stick(SH_VAR, body, k);
+    const v = shVar(body, k, memo);
     if (!v) continue;
     out += esc(body.slice(last, k)) + span('pl-smi', v);
     k += v.length - 1;
@@ -157,6 +173,7 @@ function scan(s, L) {
   let plain = 0; // start of text not yet emitted
   let defining = false;
   let lineStart = true; // only whitespace so far on this line
+  const shMemo = { close: -1, nl: -1 };
   const flush = (to) => { if (to > plain) out += esc(s.slice(plain, to)); };
   const emit = (i, j, cls) => { flush(i); out += span(cls, s.slice(i, j)); plain = j; };
   const starts = startsOf(L);
@@ -246,7 +263,7 @@ function scan(s, L) {
 
     // shell variables outside strings
     if (L.shell && ch === '$') {
-      const v = stick(SH_VAR, s, i);
+      const v = shVar(s, i, shMemo);
       if (v) { emit(i, i + v.length, 'pl-smi'); i += v.length; continue; }
     }
 

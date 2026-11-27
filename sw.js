@@ -14,6 +14,7 @@ const SHELL = [
   'src/markdown.js',
   'src/highlight.js',
   'src/emoji.js',
+  'src/entities.js',
   'src/github.js',
   'src/auth.js',
   'src/config.js',
