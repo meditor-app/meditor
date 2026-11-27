@@ -262,7 +262,41 @@ export class GitHub {
   /** A new branch starting where `from` (a branch name) is now. */
   async createBranch(owner, name, branch, from) {
     const ref = await this.request('GET', `/repos/${owner}/${name}/git/ref/heads/${enc(from)}`);
-    await this.request('POST', `/repos/${owner}/${name}/git/refs`, { body: { ref: `refs/heads/${branch}`, sha: ref.object.sha } });
+    await this.createRef(owner, name, branch, ref.object.sha);
+  }
+
+  /** The commit a branch points at, or null when there is no such branch (yet). */
+  async branchSha(owner, name, branch) {
+    try {
+      const ref = await this.request('GET', `/repos/${owner}/${name}/git/ref/heads/${enc(branch)}`);
+      return ref.object.sha;
+    } catch (e) {
+      // 409: the repository is empty, as a new fork is while GitHub is still copying it
+      if (e.status === 404 || e.status === 409) return null;
+      throw e;
+    }
+  }
+
+  createRef(owner, name, branch, sha) {
+    return this.request('POST', `/repos/${owner}/${name}/git/refs`, { body: { ref: `refs/heads/${branch}`, sha } });
+  }
+
+  /** Moves a branch to `sha`; only with `force` may that drop commits. */
+  updateRef(owner, name, branch, sha, force = false) {
+    return this.request('PATCH', `/repos/${owner}/${name}/git/refs/heads/${enc(branch)}`, { body: { sha, force } });
+  }
+
+  /**
+   * Forks a repository to the user's account. GitHub answers at once and copies the
+   * repository afterwards; if the user has forked it before, it hands back that fork.
+   */
+  async fork(owner, name) {
+    return slimRepo(await this.request('POST', `/repos/${owner}/${name}/forks`, { body: {} }));
+  }
+
+  /** Brings a fork's branch up to date with the same branch of the repository it came from. */
+  mergeUpstream(owner, name, branch) {
+    return this.request('POST', `/repos/${owner}/${name}/merge-upstream`, { body: { branch } });
   }
 
   async createPull(owner, name, { head, base, title, body }) {
@@ -288,6 +322,8 @@ function slimRepo(r) {
     private: !!r.private,
     defaultBranch: r.default_branch,
     canPush: !!r.permissions?.push,
+    // for a fork, the repository it was forked from ("owner/name")
+    parent: r.fork && r.parent ? r.parent.full_name : null,
     description: r.description || '',
     pushedAt: r.pushed_at,
   };
