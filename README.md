@@ -42,6 +42,12 @@ browser. The only server-side piece is a tiny relay that completes *Sign in with
   to the branch, or to a new branch with a pull request opened for you. If the file changed on
   GitHub meanwhile, GitHub refuses the commit rather than lose that change; load the latest
   version, check the diff, and commit again.
+- **Propose a change** to a repository you cannot push to: *fork and propose* forks it to
+  your account (or uses the fork you have), commits the file to a new branch of the fork and
+  opens a pull request. meditor then goes on in the fork, on that branch, so what you commit
+  next goes to the same pull request. Signed in with GitHub, meditor must be installed on the
+  fork too (or on all your repositories); if it is not, it says so and links to the page
+  where you add it.
 - **Drafts**: unsaved changes are kept in your browser, per file and branch, until committed —
   close the tab, come back, they are still there (the file list marks them with ●).
 - **Without a repository** the editor is a scratchpad kept in the browser; open a local file
@@ -156,6 +162,7 @@ same files are what GitHub Pages serves.
 | `src/links.js` | the address fragment, GitHub URLs, relative links inside a document |
 | `src/edit.js` | the formatting commands, as pure functions on text + selection |
 | `src/diff.js` | the line diff shown before committing |
+| `src/fork.js` | proposing a change through a fork: fork, branch, commit, pull request |
 | `src/ui.js` | everything on the page; the only module that touches the DOM |
 | `src/app.css` | the look, shared with [quedit](https://quantum.fit.vut.cz/quedit/) |
 | `manifest.webmanifest`, `sw.js` | installing as an app, and starting offline |
