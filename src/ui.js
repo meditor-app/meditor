@@ -83,6 +83,14 @@ const store = {
     try { localStorage.removeItem(k); } catch { /* ignore */ }
   },
 };
+
+// The theme chosen with ◐ ('light' or 'dark'; null follows the system), kept in the prefs. It
+// is set the moment this module runs, before boot() and, as a rule, before the page is first
+// drawn (index.html loads main.js from <head>; the Content Security Policy allows no inline
+// script that could do it sooner). app.css makes native controls follow it (color-scheme).
+let theme = ((t) => (t === 'light' || t === 'dark' ? t : null))(store.get(K.prefs, {})?.theme);
+if (theme) document.documentElement.dataset.theme = theme;
+
 const drafts = new Drafts(store);
 
 const state = {
@@ -1436,7 +1444,8 @@ function renderTree() {
     b.className = 'node' + (path === cur ? ' current' : '');
     b.dataset.path = path;
     b.title = path;
-    b.innerHTML = `<span class="ic">▤</span><span class="nm">${escapeHtml(label)}</span>${drafts.has(path) ? '<span class="draft" title="unsaved changes in this browser">●</span>' : ''}`;
+    if (path === cur) b.setAttribute('aria-current', 'true');
+    b.innerHTML = `<span class="ic" aria-hidden="true">▤</span><span class="nm">${escapeHtml(label)}</span>${drafts.has(path) ? '<span class="draft" title="unsaved changes in this browser" aria-hidden="true">●</span><span class="sr-only">, unsaved changes</span>' : ''}`;
     const acts = document.createElement('span');
     acts.className = 'acts';
     for (const [act, text, title, cls] of [['move', '✎', 'rename or move…', ''], ['delete', '✕', 'delete…', 'del']]) {
@@ -1488,7 +1497,7 @@ function renderTree() {
         b.dataset.dir = path;
         const isOpen = state.open.has(path);
         b.setAttribute('aria-expanded', String(isOpen));
-        b.innerHTML = `<span class="ic">${isOpen ? '▾' : '▸'}</span><span class="nm">${escapeHtml(d)}/</span>`;
+        b.innerHTML = `<span class="ic" aria-hidden="true">${isOpen ? '▾' : '▸'}</span><span class="nm">${escapeHtml(d)}/</span>`;
         li.append(b);
         if (isOpen) {
           const inner = document.createElement('ul');
@@ -2219,6 +2228,7 @@ function savePrefs() {
     renderer: state.renderer,
     sync: state.sync,
     highlight: hl.on,
+    theme,
   });
 }
 
@@ -2350,7 +2360,9 @@ function initTheme() {
   $('theme').addEventListener('click', () => {
     const cur = document.documentElement.dataset.theme
       || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-    document.documentElement.dataset.theme = cur === 'dark' ? 'light' : 'dark';
+    theme = cur === 'dark' ? 'light' : 'dark';
+    document.documentElement.dataset.theme = theme;
+    savePrefs();
   });
 }
 
