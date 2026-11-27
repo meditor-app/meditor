@@ -1,6 +1,21 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Auth, AuthError, AUTH_KEY, challenge, credentialStore, keepSignIn, redirectUri } from '../src/auth.js';
+import { Auth, AuthError, AUTH_KEY, challenge, credentialStore, keepSignIn, redirectUri, signInReturn } from '../src/auth.js';
+
+test('an OAuth error is shown only when it answers a sign-in this tab started (#32)', () => {
+  // anyone can link to ?error=…&error_description=…; that text must not become meditor's toast
+  const spoof = '?error=x&error_description=Session%20expired%3A%20re-enter%20your%20token%20at%20evil.example';
+  assert.deepEqual(signInReturn(spoof, null), { kind: 'ignore' });
+  assert.deepEqual(signInReturn(spoof + '&state=guess', { state: 's1' }), { kind: 'ignore' });
+  assert.deepEqual(signInReturn(spoof, { state: 's1' }), { kind: 'ignore' });
+  assert.deepEqual(signInReturn('?error=access_denied&error_description=The+user+denied&state=s1', { state: 's1' }),
+    { kind: 'error', message: 'The user denied' });
+  assert.deepEqual(signInReturn('?error=access_denied&state=s1', { state: 's1' }), { kind: 'error', message: 'access_denied' });
+  assert.deepEqual(signInReturn('?code=c&state=s1', null), { kind: 'code', code: 'c', state: 's1' });
+  assert.deepEqual(signInReturn('?installation_id=1&setup_action=install', null), { kind: 'installed' });
+  assert.equal(signInReturn('', null), null);
+  assert.equal(signInReturn('?x=1', { state: 's1' }), null);
+});
 import { GitHub, GitHubError } from '../src/github.js';
 
 const APP = { clientId: 'Iv1.abc', relay: 'https://relay.example/' };
