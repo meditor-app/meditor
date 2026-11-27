@@ -19,7 +19,7 @@ const SHELL = [
   'src/edit.js',
   'src/diff.js',
   'src/find.js',
-  'src/highlight.js',
+  'src/mdsyntax.js',
   'icons/icon.svg',
   'icons/icon-192.png',
 ];

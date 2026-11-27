@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { tokenizeLine, START, stateKey, rangesByLine, lineHtml, LONG_LINE } from '../src/highlight.js';
+import { tokenizeLine, START, stateKey, rangesByLine, lineHtml, LONG_LINE } from '../src/mdsyntax.js';
 
 // The tokens of each line of `text`, as "class:text" strings.
 function tok(text) {

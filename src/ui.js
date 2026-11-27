@@ -17,7 +17,7 @@ import { lineDiff } from './diff.js';
 import {
   findAll, matchFrom, matchBefore, replaceOne, replaceAll, escapeRegExp, MAX_MATCHES,
 } from './find.js';
-import { tokenizeLine, START, stateKey, rangesByLine, lineHtml } from './highlight.js';
+import { tokenizeLine, START, stateKey, rangesByLine, lineHtml } from './mdsyntax.js';
 
 const $ = (id) => document.getElementById(id);
 const K = {
@@ -584,7 +584,7 @@ function onKeyDown(e) {
 // ---------------------------------------------------------------- highlighting
 //
 // The textarea's own text is transparent (its caret and selection are not); under it lies a
-// copy of the text, one div per line, coloured by highlight.js and laid out exactly alike:
+// copy of the text, one div per line, coloured by mdsyntax.js and laid out exactly alike:
 // same font, padding, wrapping and width, and moved with the textarea's scroll. Find
 // matches are marked in the same copy, so it is also shown, uncoloured and under visible
 // text, while the find bar is open with highlighting off. An edit re-tokenizes only the
