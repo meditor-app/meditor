@@ -16,7 +16,13 @@ after quedit (`~/quedit`), whose palette and panel layout it shares.
 - **Only `ui.js` touches the DOM.** Rendering, API calls, auth, routing, edit commands and
   diffing are pure modules with headless tests; so is the relay (`tests/relay.test.js`).
 - Raw HTML from documents (and from GitHub's renderer) goes through `sanitizeHtml` before it
-  reaches `innerHTML`.
+  reaches `innerHTML`. It must check URLs *after* decoding entities, prefix ids and names with
+  `user-content-`, and keep only GitHub's classes; `tests/sanitize.test.js` runs a corpus of
+  known XSS vectors (`tests/xss-vectors.js`) — add to it rather than weaken it.
+- `index.html` carries a Content Security Policy (a `<meta>`; Pages cannot send headers): no
+  inline scripts, styles or handlers, and network access only to this site, `api.github.com`
+  and the relay. A new relay address or API host must be added there too (a test checks the
+  relay).
 - The rendered page's top-level blocks carry `data-line` (source line); scroll sync and task
   box toggling depend on it.
 - It installs as an app (`manifest.webmanifest`, `sw.js`). A new file in `src/` must also go

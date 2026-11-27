@@ -23,3 +23,19 @@ test('Pages publishes everything the page refers to', () => {
   const wf = read('.github/workflows/pages.yml');
   for (const f of ['index.html', 'manifest.webmanifest', 'sw.js', 'icons', 'src']) assert.match(wf, new RegExp(`cp -r .*\\b${f.replace('.', '\\.')}\\b`));
 });
+
+test('the Content Security Policy allows what the page needs and nothing inline', async () => {
+  const html = read('index.html');
+  const csp = html.match(/http-equiv="Content-Security-Policy" content="([^"]+)"/)[1];
+  const dir = Object.fromEntries(csp.split(';').map((d) => d.trim().split(/\s+/)).map(([k, ...v]) => [k, v]));
+  assert.deepEqual(dir['script-src'], ["'self'"]);
+  assert.deepEqual(dir['style-src'], ["'self'"]);
+  assert.deepEqual(dir['object-src'], ["'none'"]);
+  const { GITHUB_APP } = await import('../src/config.js');
+  for (const origin of ['https://api.github.com', new URL(GITHUB_APP.relay).origin]) {
+    assert.ok(dir['connect-src'].includes(origin), `connect-src lacks ${origin}`);
+  }
+  // nothing inline for the policy to block
+  assert.doesNotMatch(html, /<script(?![^>]*\bsrc=)[^>]*>/, 'inline <script>');
+  assert.doesNotMatch(html, /\son[a-z]+=|\sstyle=|<style/i, 'inline handler or style');
+});

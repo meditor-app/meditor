@@ -36,9 +36,13 @@ const ALLOWED_ATTRS = new Set([
   'abbr', 'align', 'alt', 'border', 'cite', 'class', 'colspan', 'datetime', 'dir', 'height',
   'href', 'hreflang', 'id', 'lang', 'media', 'name', 'open', 'rowspan', 'scope', 'span',
   'src', 'srcset', 'start', 'summary', 'title', 'type', 'valign', 'width', 'checked',
-  'disabled', 'reversed', 'viewbox', 'd', 'fill', 'data-line', 'data-path', 'aria-hidden',
-  'aria-label', 'role',
+  'disabled', 'reversed', 'viewbox', 'd', 'fill', 'aria-hidden', 'aria-label', 'role',
 ]);
+// Classes a document may use: the ones GitHub's own renderer emits (and this one). Anything
+// else could borrow the page's own styling, e.g. to pass a fake message off as meditor's.
+const ALLOWED_CLASS = /^(?:pl-[a-z0-9-]+|highlight(?:-[\w+#.-]+)?|markdown-[a-z-]+|octicon(?:-[a-z0-9-]+)?|anchor|heading-element|task-list-item(?:-checkbox)?|contains-task-list|footnotes?|footnote-[a-z-]+|data-footnote-backref|sr-only|notranslate|language-[\w+#.-]+)$/;
+/** Ids and names from documents get this prefix, as on GitHub, so they cannot collide with the page's own. */
+export const ID_PREFIX = 'user-content-';
 // Whole elements whose content is not text a reader should see.
 const DROP_CONTENT = /<(script|style|iframe|object|embed|noscript|template|textarea|title)\b[^>]*>[\s\S]*?<\/\1\s*>/gi;
 
@@ -63,12 +67,20 @@ function sanitizeTag(tag) {
   for (const a of rest.matchAll(ATTR)) {
     const key = a[1].toLowerCase();
     if (!ALLOWED_ATTRS.has(key)) continue;
-    const value = a[2] ?? a[3] ?? a[4];
-    if (value === undefined) { attrs.push(key); continue; }
+    const raw = a[2] ?? a[3] ?? a[4];
+    if (raw === undefined) { attrs.push(key); continue; }
+    // Check the value the browser will see. It is written back entity-escaped, so an entity
+    // decodeEntities does not know stays literal text and cannot turn into, say, a ':'.
+    let value = decodeEntities(raw);
     if ((key === 'href' || key === 'src' || key === 'cite') && !safeUrl(value, name === 'img' || name === 'source')) continue;
     if (key === 'srcset' && !value.split(',').every((s) => safeUrl(s.trim(), true))) continue;
-    if (name === 'input' && key === 'type' && value.toLowerCase() !== 'checkbox') return '';
-    attrs.push(`${key}="${escapeHtml(decodeEntities(value))}"`);
+    if (name === 'input' && key === 'type' && value.trim().toLowerCase() !== 'checkbox') return '';
+    if (key === 'class') {
+      value = value.split(/\s+/).filter((c) => ALLOWED_CLASS.test(c)).join(' ');
+      if (!value) continue;
+    }
+    if ((key === 'id' || key === 'name') && !value.startsWith(ID_PREFIX)) value = ID_PREFIX + value;
+    attrs.push(`${key}="${escapeHtml(value)}"`);
   }
   if (name === 'input') attrs.push('disabled');
   return `<${name}${attrs.map((a) => ' ' + a).join('')}${self ? ' /' : ''}>`;
@@ -387,7 +399,7 @@ class Renderer {
     const n = this.slugs.get(slug) ?? 0;
     this.slugs.set(slug, n + 1);
     if (n) slug = `${slug}-${n}`;
-    return `<h${level}${at} id="${escapeHtml(slug)}"><a class="anchor" href="#${escapeHtml(slug)}" aria-hidden="true">#</a>${html}</h${level}>`;
+    return `<h${level}${at} id="${ID_PREFIX}${escapeHtml(slug)}"><a class="anchor" href="#${escapeHtml(slug)}" aria-hidden="true">#</a>${html}</h${level}>`;
   }
 
   quote(body, base, at) {
@@ -643,7 +655,7 @@ class Renderer {
         if (!fn.n) { fn.n = this.footOrder.length + 1; this.footOrder.push(key); }
         fn.refs = (fn.refs ?? 0) + 1;
         const id = `fnref-${fn.n}${fn.refs > 1 ? '-' + fn.refs : ''}`;
-        return { html: `<sup><a href="#fn-${fn.n}" id="${id}" class="footnote-ref">${fn.n}</a></sup>`, end: close + 1 };
+        return { html: `<sup><a href="#fn-${fn.n}" id="${ID_PREFIX}${id}" class="footnote-ref">${fn.n}</a></sup>`, end: close + 1 };
       }
     }
 
@@ -681,7 +693,7 @@ class Renderer {
       const backs = Array.from({ length: fn.refs }, (_, k) => `<a href="#fnref-${fn.n}${k ? '-' + (k + 1) : ''}" class="footnote-backref" aria-label="back to reference">↩</a>`).join(' ');
       let body = this.blocks(fn.lines, -1, false);
       body = body.endsWith('</p>') ? body.slice(0, -4) + ` ${backs}</p>` : `${body} ${backs}`;
-      return `<li id="fn-${fn.n}">${body}</li>`;
+      return `<li id="${ID_PREFIX}fn-${fn.n}">${body}</li>`;
     });
     return `<section class="footnotes"><h2 class="sr-only">Footnotes</h2><ol>\n${items.join('\n')}\n</ol></section>`;
   }
