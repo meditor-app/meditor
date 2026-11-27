@@ -3,6 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<!-- Content Security Policy (GitHub Pages cannot send it as a header). Scripts and styles
+     only from this site, no inline ones; network requests only to this site, GitHub's API and
+     the sign-in relay (src/config.js). So even if a hostile document got script past the
+     sanitiser, it would not run, and could not send the token anywhere. Images may come
+     from anywhere, as on GitHub. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src * data: blob:; connect-src 'self' https://api.github.com https://raw.githubusercontent.com https://meditor-auth.ondra-lengal.workers.dev; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'">
 <title>meditor — Markdown editor for GitHub</title>
 <meta name="description" content="Edit the Markdown files of your GitHub repositories in the browser, side by side with the rendered page.">
 <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
@@ -250,9 +256,6 @@
 </dialog>
 
 <div id="toast" class="toast" role="alert" hidden></div>
-<script type="module">
-  import { boot } from './src/ui.js';
-  boot();
-</script>
+<script type="module" src="src/main.js"></script>
 </body>
 </html>

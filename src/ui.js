@@ -1,7 +1,7 @@
 // The page: account, repository and file navigation, the editor, the preview, commits.
 // The only module that touches the DOM.
 
-import { renderMarkdown, sanitizeHtml, escapeHtml } from './markdown.js';
+import { renderMarkdown, sanitizeHtml, escapeHtml, ID_PREFIX } from './markdown.js';
 import { GitHub, MARKDOWN_EXT } from './github.js';
 import { Auth, AuthError } from './auth.js';
 import { GITHUB_APP } from './config.js';
@@ -633,6 +633,11 @@ async function renderPreview(now = false) {
 function fixRelative(root) {
   for (const a of root.querySelectorAll('a[href]')) {
     const href = a.getAttribute('href');
+    if (/^https?:/i.test(href)) {
+      // never navigate the editor away (or hand the new page a handle on it)
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer nofollow';
+    }
     if (/^[a-z][a-z0-9+.-]*:|^\/\/|^#/i.test(href)) continue;
     a.setAttribute('href', resolveLink(href));
   }
@@ -687,9 +692,12 @@ function onPreviewClick(e) {
   const href = a.getAttribute('href');
   if (href.startsWith('#') && !href.startsWith('#repo=')) {
     e.preventDefault();
-    const id = decodeURIComponent(href.slice(1));
-    const t = document.getElementById(id) || document.getElementById(`user-content-${id}`);
-    if (t && $('preview').contains(t)) t.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    // ids in the document all carry the prefix (see ID_PREFIX); links to them may or may not
+    let id;
+    try { id = decodeURIComponent(href.slice(1)); } catch { id = href.slice(1); }
+    const bare = id.startsWith(ID_PREFIX) ? id.slice(ID_PREFIX.length) : id;
+    const t = $('preview').querySelector(`[id="${CSS.escape(ID_PREFIX + bare)}"]`);
+    if (t) t.scrollIntoView({ block: 'start', behavior: 'smooth' });
   }
 }
 

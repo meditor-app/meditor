@@ -7,13 +7,13 @@ const md = (s, o) => renderMarkdown(s, o).replace(/ data-line="\d+"/g, '').trim(
 
 test('headings get GitHub anchors, de-duplicated', () => {
   assert.equal(md('# Hello *World*'),
-    '<h1 id="hello-world"><a class="anchor" href="#hello-world" aria-hidden="true">#</a>Hello <em>World</em></h1>');
+    '<h1 id="user-content-hello-world"><a class="anchor" href="#hello-world" aria-hidden="true">#</a>Hello <em>World</em></h1>');
   const h = md('## A\n\n## A');
-  assert.match(h, /id="a"/);
-  assert.match(h, /id="a-1"/);
+  assert.match(h, /id="user-content-a"/);
+  assert.match(h, /id="user-content-a-1"/);
   assert.equal(slugify('What’s new in v2.0?'), 'whats-new-in-v20');
-  assert.match(md('Title\n====='), /^<h1 id="title">/);
-  assert.match(md('Sub\n---'), /^<h2 id="sub">/);
+  assert.match(md('Title\n====='), /^<h1 id="user-content-title">/);
+  assert.match(md('Sub\n---'), /^<h2 id="user-content-sub">/);
 });
 
 test('emphasis follows the CommonMark rules', () => {
@@ -84,8 +84,8 @@ test('tables with alignment and escaped pipes', () => {
 
 test('footnotes, rules, breaks, entities, front matter', () => {
   const f = md('x[^n]\n\n[^n]: note');
-  assert.match(f, /<sup><a href="#fn-1" id="fnref-1" class="footnote-ref">1<\/a><\/sup>/);
-  assert.match(f, /<li id="fn-1"><p>note <a href="#fnref-1"/);
+  assert.match(f, /<sup><a href="#fn-1" id="user-content-fnref-1" class="footnote-ref">1<\/a><\/sup>/);
+  assert.match(f, /<li id="user-content-fn-1"><p>note <a href="#fnref-1"/);
   assert.equal(md('***'), '<hr>');
   assert.equal(md('a  \nb\\\nc'), '<p>a<br>\nb<br>\nc</p>');
   assert.equal(md('&copy; &amp; & &bogus;'), '<p>© &amp; &amp; &amp;bogus;</p>');
