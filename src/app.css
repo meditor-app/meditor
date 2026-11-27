@@ -360,6 +360,7 @@ a.minor:hover { color: var(--accent); }
 .dlg .steps li { margin-bottom: 6px; }
 .dlg .actions { display: flex; gap: 6px; align-items: center; margin-top: 4px; }
 .dlg .error { color: var(--bad); margin: 0; }
+.dlg .progress { color: var(--ink-soft); margin: 0; }
 .dlg code { font: 12px var(--mono); }
 .dlg .big { min-height: 36px; padding: 6px 16px; font-size: 14px; }
 .dlg .who { display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: var(--plate); border: 1px solid var(--rule-soft); border-radius: 8px; }
@@ -371,6 +372,8 @@ a.minor:hover { color: var(--accent); }
 .choice { border: 1px solid var(--rule-soft); border-radius: 8px; padding: 8px 10px; margin: 0; display: flex; flex-direction: column; gap: 6px; }
 .choice label { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .choice input[type="text"] { flex: 1 1 160px; font-size: 12px; }
+/* a longer choice: its words beside the radio button, its input on a line of its own */
+.choice label > span { flex: 1 1 calc(100% - 32px); min-width: 0; }
 .repolist { list-style: none; margin: 6px 0 0; padding: 0; max-height: 46vh; overflow: auto; border: 1px solid var(--rule-soft); border-radius: 8px; background: var(--plate); }
 .repolist:empty { display: none; }
 .repolist li button {
@@ -478,13 +481,41 @@ a.minor:hover { color: var(--accent); }
 .markdown-body .alert-warning, .markdown-body .markdown-alert-warning { --alert: var(--warning); }
 .markdown-body .alert-caution, .markdown-body .markdown-alert-caution { --alert: var(--caution); }
 
-/* syntax colours in GitHub's own rendering (the "GitHub (exact)" renderer) */
+/* syntax colours: GitHub's classes, from its own rendering ("GitHub (exact)") and from
+   highlight.js ("meditor (live)") alike */
 .markdown-body .pl-c { color: var(--ink-faint); font-style: italic; }
 .markdown-body .pl-k, .markdown-body .pl-smi.pl-k { color: var(--accent); }
 .markdown-body .pl-s, .markdown-body .pl-pds, .markdown-body .pl-sr { color: var(--good); }
 .markdown-body .pl-c1, .markdown-body .pl-v, .markdown-body .pl-en, .markdown-body .pl-e { color: var(--link); }
 .markdown-body .pl-ent { color: var(--good); }
-.markdown-body .pl-smi, .markdown-body .pl-s1 { color: var(--ink); }
+.markdown-body .pl-smi, .markdown-body .pl-s1, .markdown-body .pl-kos { color: var(--ink); }
+.markdown-body .pl-s .pl-smi, .markdown-body .pl-sra, .markdown-body .pl-cce { color: var(--important); }
+.markdown-body .pl-sg { color: var(--ink-faint); }
+.markdown-body .pl-ii, .markdown-body .pl-il, .markdown-body .pl-bu { color: var(--bad); }
+.markdown-body .pl-ii { text-decoration: underline wavy; }
+.markdown-body .pl-mh, .markdown-body .pl-mdr { color: var(--link); font-weight: 600; }
+.markdown-body .pl-mb { font-weight: 600; }
+.markdown-body .pl-mi { font-style: italic; }
+.markdown-body .pl-md { color: var(--bad); background: color-mix(in srgb, var(--bad) 12%, transparent); }
+.markdown-body .pl-mi1 { color: var(--good); background: color-mix(in srgb, var(--good) 12%, transparent); }
+.markdown-body .pl-mc { color: var(--warning); }
+.markdown-body .pl-md .pl-md, .markdown-body .pl-mi1 .pl-mi1 { background: none; }
+
+/* math and Mermaid, which only GitHub's renderer draws: their source, set apart */
+.markdown-body .math { font-family: var(--mono); color: var(--important); }
+.markdown-body .math-inline { font-size: 88%; padding: 0.1em 0.3em; border-radius: 5px; background: color-mix(in srgb, var(--important) 9%, transparent); }
+.markdown-body .math-display {
+  margin: 0 0 16px; padding: 10px 16px; text-align: center; white-space: pre-wrap; font-size: 90%;
+  border-radius: 6px; background: color-mix(in srgb, var(--important) 7%, transparent);
+}
+.markdown-body .mermaid-source { margin: 0 0 16px; border-left: 3px solid var(--rule); }
+.markdown-body .mermaid-source pre { margin: 0; border-radius: 0 6px 6px 0; }
+.markdown-body .mermaid-note { margin: 0; padding: 4px 16px; font-size: 0.85em; color: var(--ink-soft); }
+.markdown-body .mermaid-switch {
+  font: inherit; padding: 0; border: 0; background: none; color: var(--link); cursor: pointer;
+  text-decoration: underline; text-underline-offset: 2px; text-decoration-thickness: 1px;
+}
+.markdown-body .mermaid-switch:hover { color: var(--accent); }
 
 /* ---- narrow screens ------------------------------------------------------ */
 

@@ -7,7 +7,7 @@
   "author": "Ondřej Lengál",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/meditor-app/meditor.git"
+    "url": "git+https://github.com/meditor-app/meditor-app.github.io.git"
   },
   "keywords": ["markdown", "editor", "github", "gfm"],
   "type": "module",

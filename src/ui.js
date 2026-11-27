@@ -14,6 +14,7 @@ import {
   continueList, toggleTask, countWords,
 } from './edit.js';
 import { lineDiff } from './diff.js';
+import { proposeChange } from './fork.js';
 import { proposeImagePath, imageMarkdown, referencedPaths, formatSize } from './images.js';
 
 const $ = (id) => document.getElementById(id);
@@ -547,8 +548,13 @@ function updateCommitButton() {
   b.disabled = !loc;
   b.title = !loc ? 'open a file from a repository to commit it'
     : !state.user ? 'sign in to commit'
-      : 'commit this file to GitHub (Ctrl+S)';
+      : canFork() ? 'you cannot push here: propose this change through a fork (Ctrl+S)'
+        : 'commit this file to GitHub (Ctrl+S)';
 }
+
+/** The user cannot push to the open repository, but can fork it and propose the change. */
+const canFork = () => !!state.user && !!state.repo && !state.repo.canPush
+  && state.user.login.toLowerCase() !== state.repo.owner.toLowerCase();
 
 function onKeyDown(e) {
   const ta = src();
@@ -839,6 +845,13 @@ function onPreviewClick(e) {
     applyEdit({ text: toggleTask(ta.value, line), start: selectionStart, end: selectionEnd });
     renderPreview(true);
     $('previewScroll').scrollTop = keep;
+    return;
+  }
+  // "switch the renderer to GitHub (exact)" under a Mermaid diagram's source
+  const sw = e.target.closest('button.mermaid-switch[data-renderer]');
+  if (sw) {
+    $('renderer').value = sw.dataset.renderer;
+    $('renderer').dispatchEvent(new Event('change'));
     return;
   }
   const a = e.target.closest('a[href]');
@@ -1294,15 +1307,26 @@ function openCommitDialog() {
   $('commitBody').value = '';
   $('commitError').hidden = true;
   $('diff').hidden = true;
+  $('commitProgress').hidden = true;
   const login = state.user.login.toLowerCase().replace(/[^a-z0-9-]/g, '');
-  $('prBranch').value = `${login}/${basename(loc.path).replace(/\.[^.]+$/, '').toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${Date.now().toString(36).slice(-4)}`;
-  const direct = document.querySelector('input[name="target"][value="direct"]');
-  direct.checked = true;
-  const cantPush = !repo.canPush;
-  $('commitGo').disabled = cantPush;
-  $('commitNote').textContent = cantPush
-    ? 'Your token cannot push to this repository. Download the file, or fork the repository on GitHub and open the fork here.'
-    : '';
+  const topic = `${basename(loc.path).replace(/\.[^.]+$/, '').toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${Date.now().toString(36).slice(-4)}`;
+  $('prBranch').value = `${login}/${topic}`;
+  // in the user's own fork the branch needs no name of theirs in front
+  $('forkBranch').value = topic;
+  const radio = (v) => document.querySelector(`input[name="target"][value="${v}"]`);
+  const fork = canFork();
+  radio('direct').closest('label').hidden = !repo.canPush;
+  radio('pr').closest('label').hidden = !repo.canPush;
+  $('forkChoice').hidden = !fork;
+  radio(fork ? 'fork' : 'direct').checked = true;
+  $('forkUser').textContent = state.user.login;
+  $('forkBase').textContent = `${repo.full} @ ${loc.ref}`;
+  $('commitGo').disabled = !repo.canPush && !fork;
+  $('commitGo').textContent = fork ? 'fork and propose' : 'commit';
+  $('commitNote').textContent = repo.canPush ? ''
+    : !fork ? 'You cannot push to this repository. Download the file, or fork the repository on GitHub and open the fork here.'
+      : `You cannot push to ${repo.full}. meditor forks it to your account (or uses the fork you have), commits the file to a new branch there and opens a pull request; you can then keep editing on that branch.`
+        + (auth.kind === 'app' ? ' Signed in with GitHub, meditor needs to be installed on the fork as well; if it is not, it will say how.' : '');
   $('commitDlg').showModal();
   $('commitMsg').select();
 }
@@ -1327,11 +1351,16 @@ async function doCommit() {
   const title = $('commitMsg').value.trim();
   const body = $('commitBody').value.trim();
   const message = body ? `${title}\n\n${body}` : title;
-  const pr = document.querySelector('input[name="target"]:checked').value === 'pr';
+  const target = document.querySelector('input[name="target"]:checked').value;
+  const pr = target === 'pr';
   const err = $('commitError');
   err.hidden = true;
   $('commitGo').disabled = true;
   try {
+    if (target === 'fork') {
+      await propose({ text, title, body, message });
+      return;
+    }
     let branch = loc.ref;
     if (pr) {
       branch = $('prBranch').value.trim();
@@ -1392,8 +1421,18 @@ async function doCommit() {
     toast(note, 9000);
     showDoc();
   } catch (e) {
+    $('commitProgress').hidden = true;
     err.textContent = e.message;
     err.hidden = false;
+    // something to do on github.com first (install meditor, fork by hand, …), then retry
+    for (const { url, label } of e.actions || []) {
+      const a = document.createElement('a');
+      a.href = url;
+      a.target = '_blank';
+      a.rel = 'noopener';
+      a.textContent = `${label} ↗`;
+      err.append(' ', a);
+    }
     if (e.status === 409 && (e.body?.path || loc.path) === loc.path && !e.body?.moved) {
       const btn = document.createElement('button');
       btn.type = 'button';
@@ -1402,8 +1441,67 @@ async function doCommit() {
       err.append(' ', btn);
     }
   } finally {
-    $('commitGo').disabled = !state.repo?.canPush;
+    $('commitGo').disabled = !state.repo?.canPush && !canFork();
   }
+}
+
+// The branch a "fork and propose" created in the fork before failing later on (say, the
+// file had changed upstream): trying again with the same name takes that branch over.
+let forkBranchMade = null;
+
+/**
+ * Forks the open repository (or finds the user's fork), commits there, and opens a pull
+ * request. Afterwards the editor is on the fork's new branch, as after "commit to a new
+ * branch" it is on that branch: further commits go to it, and so to the pull request.
+ */
+async function propose({ text, title, body, message }) {
+  const loc = state.loc;
+  const branch = $('forkBranch').value.trim();
+  if (!branch) throw new Error('Name the new branch.');
+  const key = `${loc.owner}/${loc.name}@${loc.ref}:${branch}`;
+  const shown = $('commitProgress');
+  const imgs = imagesToCommit();
+  const images = [];
+  for (const i of imgs) images.push({ path: i.path, blobBase64: bytesToBase64(new Uint8Array(await i.blob.arrayBuffer())) });
+  const r = await busy('proposing the change', () => proposeChange(state.gh, {
+    upstream: loc, login: state.user.login, branch, text, message, sha: state.doc.sha, title, body,
+    installUrl: installUrl(), resume: forkBranchMade === key, images,
+  }, {
+    progress: (t) => { shown.textContent = `${t}…`; shown.hidden = false; },
+    created: () => { forkBranchMade = key; },
+  }));
+  forkBranchMade = null;
+  store.del(draftKey(loc));
+  forgetImages(draftKey(loc));
+  // the images are in the fork now: shown from what we have if it is private, else from it
+  const committed = new Map(imgs.map((i) => [i.path, i]));
+  for (const [path, p] of state.pending) if (!committed.has(path)) URL.revokeObjectURL(p.url);
+  state.pending = new Map();
+  for (const [path, i] of committed) {
+    const k = `${r.fork.owner}/${r.fork.name}@${branch}:${path}`;
+    if (r.fork.private && !state.images.has(k)) state.images.set(k, i.url);
+    else URL.revokeObjectURL(i.url);
+  }
+  state.doc = { base: text, sha: r.sha, isNew: false };
+  $('commitDlg').close();
+  hideBanner();
+  const link = (url, label) => `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(label)}</a>`;
+  let note = `Committed ${link(r.commit.html_url, r.commit.sha.slice(0, 7))} to ${escapeHtml(branch)} in your fork ${escapeHtml(r.fork.full)}.`;
+  note += r.pull ? ` Opened ${link(r.pull.html_url, `pull request #${r.pull.number}`)} in ${escapeHtml(loc.owner)}/${escapeHtml(loc.name)}.`
+    : ` ${link(r.compare, 'Open the pull request on GitHub')}.`;
+  // Go on in the fork, on the new branch: its file list, its branches, and commits that go
+  // to the pull request. The text is kept (state.loc is set first, so openFile leaves it).
+  const next = { owner: r.fork.owner, name: r.fork.name, ref: branch, path: loc.path };
+  state.loc = next;
+  rememberRecent(next);
+  go(next);
+  await routing;
+  status('');
+  showDoc();
+  toast(note, 12000);
+  const pull = r.pull;
+  showBanner(`This is your fork ${r.fork.full}, on the branch ${branch}${pull ? ` of pull request #${pull.number}` : ''}: what you commit here goes to ${pull ? 'the pull request' : 'that branch'}.`,
+    [[pull ? `pull request #${pull.number} ↗` : 'open the pull request ↗', () => window.open(pull ? pull.html_url : r.compare, '_blank', 'noopener')]]);
 }
 
 /** The file changed on GitHub: take its new version as the base, keep the text being edited. */
@@ -1902,6 +2000,7 @@ export async function boot() {
   });
   $('showDiff').addEventListener('click', showDiff);
   $('prBranch').addEventListener('focus', () => { document.querySelector('input[name="target"][value="pr"]').checked = true; });
+  $('forkBranch').addEventListener('focus', () => { document.querySelector('input[name="target"][value="fork"]').checked = true; });
 
   // rename, move, delete
   $('fileForm').addEventListener('submit', (e) => {

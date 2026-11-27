@@ -6,7 +6,9 @@ Edit the Markdown files of your GitHub repositories in the browser: the source o
 the rendered page on the other, and a commit (or a pull request) when you are done.
 In the spirit of [prose.io](https://prose.io), as one static page.
 
-**→ <https://meditor-app.github.io/meditor/>**
+**→ <https://meditor-app.github.io/>**
+
+![meditor editing its own README: the file list, the Markdown source and the rendered page side by side](docs/screenshot.png)
 
 No installation, no dependencies: the page talks to `api.github.com` directly from your
 browser. The only server-side piece is a tiny relay that completes *Sign in with GitHub*.
@@ -33,14 +35,23 @@ browser. The only server-side piece is a tiny relay that completes *Sign in with
   - *source / both / rendered* choose the panels; *files* hides the file list; drag the gaps
     between panels to resize them (double-click to reset)
 - **Rendering**: *meditor (live)* renders as you type, GitHub-flavoured: tables, task lists,
-  strikethrough, autolinks, footnotes, alerts (`> [!NOTE]`), front matter, and HTML (sanitised
-  much like GitHub does). *GitHub (exact)* asks GitHub to render it, which is exactly what
-  github.com shows (syntax highlighting included) but costs one API request per pause in
-  typing.
+  strikethrough, autolinks, footnotes, alerts (`> [!NOTE]`), front matter, emoji shortcodes
+  (`:tada:`), syntax colours in code blocks (JavaScript/TypeScript, Python, shell, JSON, YAML,
+  C/C++, Java, Rust, Go, HTML/XML, CSS, diff), and HTML (sanitised much like GitHub does).
+  Math (`$…$`, `$$…$$`, ```` ```math ````) and Mermaid diagrams are shown as their source, set
+  apart: GitHub draws them with scripts this page does not load. *GitHub (exact)* asks GitHub
+  to render it, which is exactly what github.com shows (math and diagrams included) but costs
+  one API request per pause in typing.
 - **Commit** with *commit…* (`Ctrl+S`): see the changes, write a message, and commit straight
   to the branch, or to a new branch with a pull request opened for you. If the file changed on
   GitHub meanwhile, GitHub refuses the commit rather than lose that change; load the latest
   version, check the diff, and commit again.
+- **Propose a change** to a repository you cannot push to: *fork and propose* forks it to
+  your account (or uses the fork you have), commits the file to a new branch of the fork and
+  opens a pull request. meditor then goes on in the fork, on that branch, so what you commit
+  next goes to the same pull request. Signed in with GitHub, meditor must be installed on the
+  fork too (or on all your repositories); if it is not, it says so and links to the page
+  where you add it.
 - **Drafts**: unsaved changes are kept in your browser, per file and branch, until committed —
   close the tab, come back, they are still there (the file list marks them with ●).
 - **Without a repository** the editor is a scratchpad kept in the browser; open a local file
@@ -92,20 +103,22 @@ listed in `ALLOWED_ORIGINS`. This is the same arrangement as prose.io's Gatekeep
 
 The sign-in tokens live in the browser's local storage, which every page of the same
 *origin* can read. meditor is therefore published from an organization of its own,
-`meditor-app`, whose GitHub Pages origin (`meditor-app.github.io`) hosts nothing else. It
-used to live at `ondrik.github.io/meditor/`, shared with the other pages of that account.
+`meditor-app`, whose GitHub Pages origin (`meditor-app.github.io`) hosts nothing else: the
+repository is `meditor-app/meditor-app.github.io`, the organization's own site. It used to
+live at `ondrik.github.io/meditor/`, shared with the other pages of that account, and then
+at `meditor-app.github.io/meditor/`, which now forwards to the root.
 
 ### Setting up Sign in with GitHub
 
 Needed once, by whoever deploys meditor. Until it is done the page offers tokens only.
 
 1. **Register a GitHub App** at <https://github.com/settings/apps/new>:
-   - *GitHub App name*: e.g. `meditor`; *Homepage URL*: `https://meditor-app.github.io/meditor/`
-   - *Callback URL*: `https://meditor-app.github.io/meditor/`; add a second one,
+   - *GitHub App name*: e.g. `meditor`; *Homepage URL*: `https://meditor-app.github.io/`
+   - *Callback URL*: `https://meditor-app.github.io/`; add a second one,
      `http://localhost:8000/`, for development
    - *Expire user authorization tokens*: on. *Request user authorization (OAuth) during
      installation*: **off**. *Enable Device Flow*: off.
-   - *Setup URL*: `https://meditor-app.github.io/meditor/`, with *Redirect on update* on
+   - *Setup URL*: `https://meditor-app.github.io/`, with *Redirect on update* on
    - *Webhook*: uncheck *Active*
    - *Repository permissions*: **Contents: Read and write**, **Pull requests: Read and
      write** (Metadata: Read-only is added by itself)
@@ -122,6 +135,15 @@ Needed once, by whoever deploys meditor. Until it is done the page offers tokens
    ```
 3. **Point the page at them** in `src/config.js` (client ID, slug, relay URL), and push.
 
+## Problems and ideas
+
+Report bugs and suggest features in the
+[issue tracker](https://github.com/meditor-app/meditor/issues). For a rendering problem,
+include the Markdown that renders wrongly (and how GitHub renders it, if different).
+Security problems (anything that lets a document or another site get at your GitHub
+sign-in) are better reported privately, through
+[a security advisory](https://github.com/meditor-app/meditor/security/advisories/new).
+
 ## Development
 
 ```
@@ -135,6 +157,8 @@ same files are what GitHub Pages serves.
 | file | what |
 | --- | --- |
 | `src/markdown.js` | GitHub-flavoured Markdown → HTML, and the HTML sanitiser |
+| `src/highlight.js` | syntax colours for code blocks, with GitHub's class names |
+| `src/emoji.js` | the emoji shortcodes (`:tada:`) |
 | `src/github.js` | the REST API calls (files, trees, branches, commits, pull requests) |
 | `src/auth.js` | signing in: the GitHub App's OAuth flow (with PKCE), token renewal, tokens |
 | `src/config.js` | the GitHub App's client ID and slug, and the relay's URL |
@@ -142,6 +166,7 @@ same files are what GitHub Pages serves.
 | `src/links.js` | the address fragment, GitHub URLs, relative links inside a document |
 | `src/edit.js` | the formatting commands, as pure functions on text + selection |
 | `src/diff.js` | the line diff shown before committing |
+| `src/fork.js` | proposing a change through a fork: fork, branch, commit, pull request |
 | `src/ui.js` | everything on the page; the only module that touches the DOM |
 | `src/app.css` | the look, shared with [quedit](https://quantum.fit.vut.cz/quedit/) |
 | `manifest.webmanifest`, `sw.js` | installing as an app, and starting offline |
