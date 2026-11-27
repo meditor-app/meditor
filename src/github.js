@@ -1,7 +1,8 @@
 // The GitHub REST API, as much of it as an editor of Markdown files needs.
 //
 // Everything goes straight from the browser to api.github.com, which allows that (CORS),
-// so the page needs no server of its own. The user's token never goes anywhere else.
+// so the page needs no server of its own (apart from the sign-in relay, see auth.js).
+// The user's token never goes anywhere else.
 // `fetch` is injected so the tests can run against a fake.
 
 const API = 'https://api.github.com';
@@ -36,22 +37,26 @@ const enc = (path) => path.split('/').map(encodeURIComponent).join('/');
 
 export class GitHub {
   /**
-   * @param {string|null} token a personal access token, or null for anonymous access
-   *   (public repositories only, and 60 requests an hour)
+   * @param {string|null|{token(): Promise<string|null>, refresh?(): Promise<boolean>, kind?: string}} auth
+   *   a token, something that hands out (and renews) tokens — see auth.js — or null for
+   *   anonymous access (public repositories only, and 60 requests an hour)
    * @param {typeof fetch} [fetchImpl]
    */
-  constructor(token, fetchImpl = (...a) => fetch(...a)) {
-    this.token = token || null;
+  constructor(auth, fetchImpl = (...a) => fetch(...a)) {
+    this.auth = typeof auth === 'string' ? { token: async () => auth, kind: 'pat' } : auth || null;
     this.fetch = fetchImpl;
     this.rate = null;
   }
 
-  async request(method, path, { body, accept, raw } = {}) {
+  get signedIn() { return !!this.auth; }
+
+  async request(method, path, { body, accept, raw } = {}, retried = false) {
     const headers = {
       Accept: accept || 'application/vnd.github+json',
       'X-GitHub-Api-Version': '2022-11-28',
     };
-    if (this.token) headers.Authorization = `Bearer ${this.token}`;
+    const token = this.auth ? await this.auth.token() : null;
+    if (token) headers.Authorization = `Bearer ${token}`;
     if (body !== undefined) headers['Content-Type'] = 'application/json';
     const url = path.startsWith('http') ? path : API + path;
     const res = await this.fetch(url, {
@@ -62,6 +67,10 @@ export class GitHub {
     });
     const remaining = res.headers?.get?.('x-ratelimit-remaining');
     if (remaining != null) this.rate = { remaining: +remaining, reset: +res.headers.get('x-ratelimit-reset') };
+    // an app token can expire early (revoked, clock skew): renew it once and try again
+    if (res.status === 401 && !retried && this.auth?.refresh && await this.auth.refresh()) {
+      return this.request(method, path, { body, accept, raw }, true);
+    }
     if (!res.ok) {
       let data = null;
       try { data = await res.json(); } catch { /* not JSON */ }
@@ -74,13 +83,14 @@ export class GitHub {
     return res.json();
   }
 
-  /** Follows `Link: rel="next"` up to `max` pages. */
-  async paged(path, max = 10) {
+  /** Follows `Link: rel="next"` up to `max` pages; `key` names the list in an object response. */
+  async paged(path, max = 10, key = null) {
     const out = [];
     let url = path;
     for (let page = 0; url && page < max; page++) {
       const res = await this.request('GET', url, { raw: 'response' });
-      out.push(...(await res.json()));
+      const data = await res.json();
+      out.push(...(key ? data[key] : data));
       const link = res.headers?.get?.('link') || '';
       const m = link.match(/<([^>]+)>;\s*rel="next"/);
       url = m ? m[1] : null;
@@ -90,9 +100,20 @@ export class GitHub {
 
   user() { return this.request('GET', '/user'); }
 
-  /** Repositories the user can see, most recently pushed first. */
+  /**
+   * Repositories the user can open, most recently pushed first. Signed in through the
+   * GitHub App, that is the repositories the app is installed on (and the user can see).
+   */
   async repos() {
-    const list = await this.paged('/user/repos?per_page=100&sort=pushed&affiliation=owner,collaborator,organization_member');
+    let list;
+    if (this.auth?.kind === 'app') {
+      const inst = await this.paged('/user/installations?per_page=100', 5, 'installations');
+      list = [];
+      for (const i of inst) list.push(...await this.paged(`/user/installations/${i.id}/repositories?per_page=100`, 10, 'repositories'));
+      list.sort((a, b) => String(b.pushed_at).localeCompare(String(a.pushed_at)));
+    } else {
+      list = await this.paged('/user/repos?per_page=100&sort=pushed&affiliation=owner,collaborator,organization_member');
+    }
     return list.map(slimRepo);
   }
 
@@ -189,13 +210,15 @@ function slimRepo(r) {
 
 function explain(status, data, gh) {
   const msg = data?.message || `HTTP ${status}`;
-  if (status === 401) return 'GitHub did not accept the token (it may have expired or been revoked).';
+  if (status === 401) return 'GitHub did not accept the sign-in (it may have expired or been revoked). Please sign in again.';
   if (status === 403 && gh.rate && gh.rate.remaining === 0) {
     const when = new Date(gh.rate.reset * 1000).toLocaleTimeString();
-    return `GitHub's rate limit is used up until ${when}.${gh.token ? '' : ' Signing in with a token raises it.'}`;
+    return `GitHub's rate limit is used up until ${when}.${gh.auth ? '' : ' Signing in raises it.'}`;
   }
+  if (status === 403 && gh.auth?.kind === 'app') return `Not allowed: ${msg}. meditor may not be installed on this repository, or you cannot write to it.`;
   if (status === 403) return `Not allowed: ${msg}. The token may lack the "Contents: write" permission for this repository.`;
-  if (status === 404) return gh.token ? `Not found (or the token cannot see it): ${msg}` : `Not found: ${msg}. For a private repository, sign in with a token.`;
+  if (status === 404 && gh.auth?.kind === 'app') return `Not found: ${msg}. For a private repository, install meditor on it first.`;
+  if (status === 404) return gh.auth ? `Not found (or the token cannot see it): ${msg}` : `Not found: ${msg}. For a private repository, sign in first.`;
   if (status === 409) return 'The file changed on GitHub since it was opened. Reload it (your text is kept as a draft) and commit again.';
   if (status === 422) return `GitHub refused the change: ${data?.errors?.[0]?.message || msg}`;
   return msg;

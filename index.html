@@ -82,7 +82,7 @@
         <p>You are editing the <b>scratchpad</b>, kept in this browser.</p>
         <p><button id="openRepo2" type="button">open a repository…</button></p>
         <p class="help">Public repositories open without signing in. To see private ones and to
-          commit, <a href="#" id="signin2">sign in</a> with a GitHub token.</p>
+          commit, <a href="#" id="signin2">sign in</a> to GitHub.</p>
         <p class="help"><label class="button linklike">open a local file<input type="file" id="localFile" accept=".md,.markdown,.mdx,.txt,text/markdown,text/plain" hidden></label></p>
       </div>
     </aside>
@@ -130,26 +130,36 @@
 <dialog id="signinDlg" class="dlg">
   <form method="dialog" id="signinForm">
     <h2>Sign in to GitHub</h2>
-    <p>meditor is a static page with no server, so it talks to GitHub with a
-      <b>personal access token</b> that you create. It is kept only in this browser and sent
-      only to <code>api.github.com</code>.</p>
-    <ol class="steps">
-      <li>Create a <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">fine-grained token</a>:
-        choose the repositories, and under <i>Repository permissions</i> give
-        <b>Contents: Read and write</b> (add <b>Pull requests: Read and write</b> to open pull requests).</li>
-      <li>Or a <a href="https://github.com/settings/tokens/new?scopes=repo&amp;description=meditor" target="_blank" rel="noopener">classic token</a> with the <code>repo</code> scope
-        (<code>public_repo</code> for public repositories only).</li>
-    </ol>
-    <label class="field">token
-      <input id="tokenInput" type="password" autocomplete="off" spellcheck="false" placeholder="github_pat_… or ghp_…">
-    </label>
-    <label class="toggle"><input type="checkbox" id="rememberToken" checked> remember on this computer</label>
+    <div id="whoBox" class="who" hidden></div>
+    <div id="appBox" hidden>
+      <p>meditor asks GitHub for permission to read and change files <b>only in the repositories
+        you choose</b>. The permission lasts eight hours at a time and renews itself while you use
+        meditor; withdraw it any time in your GitHub settings.</p>
+      <p><button type="button" id="ghSignin" class="primary big">Sign in with GitHub</button></p>
+      <p class="help">Then <a id="installLink" target="_blank" rel="noopener">choose the repositories</a>
+        meditor may see (you can come back and change them later).</p>
+    </div>
+    <details id="patBox" class="pat">
+      <summary>use a personal access token instead</summary>
+      <p>A token that you create, kept only in this browser and sent only to <code>api.github.com</code>.</p>
+      <ol class="steps">
+        <li>Create a <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">fine-grained token</a>:
+          choose the repositories, and under <i>Repository permissions</i> give
+          <b>Contents: Read and write</b> (add <b>Pull requests: Read and write</b> to open pull requests).</li>
+        <li>Or a <a href="https://github.com/settings/tokens/new?scopes=repo&amp;description=meditor" target="_blank" rel="noopener">classic token</a> with the <code>repo</code> scope
+          (<code>public_repo</code> for public repositories only).</li>
+      </ol>
+      <label class="field">token
+        <input id="tokenInput" type="password" autocomplete="off" spellcheck="false" placeholder="github_pat_… or ghp_…">
+      </label>
+      <label class="toggle"><input type="checkbox" id="rememberToken" checked> remember on this computer</label>
+      <p class="actions"><span class="spacer"></span><button id="signinGo">sign in with the token</button></p>
+    </details>
     <p id="signinError" class="error" hidden></p>
     <div class="actions">
       <button type="button" id="signout" class="danger" hidden>sign out</button>
       <span class="spacer"></span>
-      <button type="button" data-close>cancel</button>
-      <button id="signinGo" class="primary">sign in</button>
+      <button type="button" data-close>close</button>
     </div>
   </form>
 </dialog>
@@ -170,6 +180,8 @@
       <ul id="repoList" class="repolist"></ul>
     </div>
     <p id="repoNote" class="help"></p>
+    <p id="repoInstall" class="help" hidden>Showing the repositories meditor may see.
+      <a id="repoInstallLink" target="_blank" rel="noopener">Add or remove repositories ↗</a></p>
     <div class="actions">
       <span class="spacer"></span>
       <button type="button" data-close>close</button>

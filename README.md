@@ -6,8 +6,8 @@ In the spirit of [prose.io](https://prose.io), as one static page.
 
 **→ <https://ondrik.github.io/meditor/>**
 
-No server, no installation, no dependencies: the page talks to `api.github.com` directly
-from your browser.
+No installation, no dependencies: the page talks to `api.github.com` directly from your
+browser. The only server-side piece is a tiny relay that completes *Sign in with GitHub*.
 
 ## Using it
 
@@ -42,18 +42,56 @@ from your browser.
 
 ## Signing in
 
-A static page cannot complete GitHub's OAuth login (that needs a server to hold a client
-secret), so meditor uses a **personal access token** you create:
+**Sign in with GitHub** (top right) goes through meditor's GitHub App: GitHub asks you to
+allow it, and you choose which repositories meditor may see. It can read and change files
+and open pull requests there, and nothing else. The permission renews itself every eight
+hours while you use meditor; withdraw it under *GitHub → Settings → Applications*.
 
-- a [fine-grained token](https://github.com/settings/personal-access-tokens/new) limited to the
-  repositories you want to edit, with *Repository permissions → Contents: Read and write*
-  (plus *Pull requests: Read and write* to open pull requests), or
-- a [classic token](https://github.com/settings/tokens/new?scopes=repo&description=meditor) with
-  the `repo` scope (`public_repo` for public repositories only).
+Alternatively, paste a **personal access token** (under *use a personal access token
+instead*): a [fine-grained token](https://github.com/settings/personal-access-tokens/new)
+with *Contents: Read and write* (and *Pull requests: Read and write*), or a
+[classic token](https://github.com/settings/tokens/new?scopes=repo&description=meditor) with
+the `repo` scope.
 
-The token stays in your browser (local storage, or only for the session if you untick
-*remember*) and is sent nowhere but `api.github.com`. Public repositories can be read without
-signing in, at GitHub's anonymous rate of 60 requests an hour.
+Either way the token stays in your browser and is sent only to `api.github.com`. Public
+repositories can be read without signing in, at GitHub's anonymous rate of 60 requests an
+hour.
+
+### Why there is a relay
+
+A static page cannot finish GitHub's sign-in by itself: trading the one-time code for a
+token needs the app's client secret, which cannot be published in a page, and github.com does
+not accept that request from a page anyway (no CORS). [`worker/relay.js`](worker/relay.js), a
+small Cloudflare Worker, does just that step (and token renewal): it adds the secret, asks
+GitHub, and hands the answer back. It stores and logs nothing, and serves only the pages
+listed in `ALLOWED_ORIGINS`. This is the same arrangement as prose.io's Gatekeeper.
+
+### Setting up Sign in with GitHub
+
+Needed once, by whoever deploys meditor. Until it is done the page offers tokens only.
+
+1. **Register a GitHub App** at <https://github.com/settings/apps/new>:
+   - *GitHub App name*: e.g. `meditor`; *Homepage URL*: `https://ondrik.github.io/meditor/`
+   - *Callback URL*: `https://ondrik.github.io/meditor/`; add a second one,
+     `http://localhost:8000/`, for development
+   - *Expire user authorization tokens*: on. *Request user authorization (OAuth) during
+     installation*: **off**. *Enable Device Flow*: off.
+   - *Setup URL*: `https://ondrik.github.io/meditor/`, with *Redirect on update* on
+   - *Webhook*: uncheck *Active*
+   - *Repository permissions*: **Contents: Read and write**, **Pull requests: Read and
+     write** (Metadata: Read-only is added by itself)
+   - *Where can this GitHub App be installed?*: *Any account*, so that others can use it
+
+   Then, on the app's page, note the **Client ID** and the app's URL name (the *slug*, as in
+   `github.com/apps/<slug>`), and **generate a client secret**.
+2. **Deploy the relay** (a free Cloudflare account is enough): set `GITHUB_CLIENT_ID` in
+   `worker/wrangler.toml`, then from `worker/`:
+   ```
+   npx wrangler login
+   npx wrangler secret put GITHUB_CLIENT_SECRET     # paste the client secret
+   npx wrangler deploy                             # prints https://meditor-auth.<you>.workers.dev
+   ```
+3. **Point the page at them** in `src/config.js` (client ID, slug, relay URL), and push.
 
 ## Development
 
@@ -69,6 +107,9 @@ same files are what GitHub Pages serves.
 | --- | --- |
 | `src/markdown.js` | GitHub-flavoured Markdown → HTML, and the HTML sanitiser |
 | `src/github.js` | the REST API calls (files, trees, branches, commits, pull requests) |
+| `src/auth.js` | signing in: the GitHub App's OAuth flow (with PKCE), token renewal, tokens |
+| `src/config.js` | the GitHub App's client ID and slug, and the relay's URL |
+| `worker/relay.js` | the sign-in relay (Cloudflare Worker) |
 | `src/links.js` | the address fragment, GitHub URLs, relative links inside a document |
 | `src/edit.js` | the formatting commands, as pure functions on text + selection |
 | `src/diff.js` | the line diff shown before committing |

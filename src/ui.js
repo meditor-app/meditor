@@ -3,6 +3,8 @@
 
 import { renderMarkdown, sanitizeHtml, escapeHtml } from './markdown.js';
 import { GitHub, MARKDOWN_EXT } from './github.js';
+import { Auth, AuthError } from './auth.js';
+import { GITHUB_APP } from './config.js';
 import {
   parseFragment, formatFragment, parseGitHubUrl, splitRefPath, resolveRef, githubUrl, rawUrl,
   dirname, basename, joinPath,
@@ -15,7 +17,8 @@ import { lineDiff } from './diff.js';
 
 const $ = (id) => document.getElementById(id);
 const K = {
-  token: 'meditor:token',
+  oldToken: 'meditor:token',
+  pending: 'meditor:signin',
   scratch: 'meditor:scratch',
   draft: 'meditor:draft:',
   panels: 'meditor:panels',
@@ -33,8 +36,7 @@ edit, and **commit…** (\`Ctrl+S\`). You can commit straight to the branch or o
 request.
 
 - Public repositories open without signing in.
-- For private ones, and to commit, **sign in** with a
-  [personal access token](https://github.com/settings/personal-access-tokens/new).
+- For private ones, and to commit, **sign in** (top right).
 - Unsaved changes are kept in this browser as drafts, file by file, until you commit them.
 
 ## Markdown, quickly
@@ -118,47 +120,112 @@ const draftKey = (loc) => `${K.draft}${loc.owner}/${loc.name}@${loc.ref}:${loc.p
 
 // ---------------------------------------------------------------- account
 
-function loadToken() {
-  try { return localStorage.getItem(K.token) || sessionStorage.getItem(K.token); } catch { return null; }
-}
+// Credentials live in localStorage, or in sessionStorage when the user asked not to be
+// remembered; reads look in both.
+let rememberCreds = true;
+const credStore = {
+  get(k) {
+    try { return localStorage.getItem(k) ?? sessionStorage.getItem(k); } catch { return null; }
+  },
+  set(k, v) {
+    try {
+      (rememberCreds ? sessionStorage : localStorage).removeItem(k);
+      (rememberCreds ? localStorage : sessionStorage).setItem(k, v);
+    } catch { /* private mode: lasts for this page only */ }
+  },
+  del(k) {
+    try { localStorage.removeItem(k); sessionStorage.removeItem(k); } catch { /* ignore */ }
+  },
+};
+const auth = new Auth(GITHUB_APP, credStore);
+const installUrl = () => `https://github.com/apps/${GITHUB_APP.slug}/installations/new`;
 
-function saveToken(token, remember) {
-  try {
-    localStorage.removeItem(K.token);
-    sessionStorage.removeItem(K.token);
-    if (token) (remember ? localStorage : sessionStorage).setItem(K.token, token);
-  } catch { /* private mode: the token lasts for this page only */ }
-}
-
-async function signIn(token, remember) {
-  const gh = new GitHub(token);
-  const user = await gh.user();
+/** Whoever the stored credentials say, checked with GitHub. */
+async function useCredentials() {
+  const gh = new GitHub(auth);
+  state.user = await gh.user();
   state.gh = gh;
-  state.user = user;
   state.repos = null;
-  saveToken(token, remember);
   showAccount();
 }
 
+async function signInWithToken(token, remember) {
+  const user = await new GitHub(token).user();
+  rememberCreds = remember;
+  auth.usePat(token);
+  state.gh = new GitHub(auth);
+  state.user = user;
+  state.repos = null;
+  showAccount();
+}
+
+async function signInWithGitHub() {
+  saveDraftNow();
+  const { url, pending } = await auth.begin(location.href);
+  sessionStorage.setItem(K.pending, JSON.stringify({ ...pending, hash: location.hash }));
+  location.assign(url);
+}
+
+/**
+ * Back from github.com: either signed in (?code=…&state=…), or meditor was installed on more
+ * repositories (?installation_id=…&setup_action=…). Returns where to go next.
+ */
+async function finishSignIn() {
+  const q = new URLSearchParams(location.search);
+  if (!q.has('code') && !q.has('setup_action') && !q.has('error')) return;
+  let pending = null;
+  try { pending = JSON.parse(sessionStorage.getItem(K.pending) || 'null'); sessionStorage.removeItem(K.pending); } catch { /* none */ }
+  // drop the query: the code is single-use and should not stay in the address or history
+  history.replaceState(null, '', location.pathname + (pending?.hash || location.hash));
+  if (q.has('error')) {
+    toast(`GitHub did not sign you in: ${escapeHtml(q.get('error_description') || q.get('error'))}`, 8000);
+    return;
+  }
+  if (q.has('code')) {
+    try {
+      rememberCreds = true;
+      await auth.complete(q.get('code'), q.get('state'), pending);
+      await useCredentials();
+      const inst = await state.gh.request('GET', '/user/installations?per_page=1').catch(() => null);
+      if (inst && inst.total_count === 0) {
+        toast(`Signed in as <b>${escapeHtml(state.user.login)}</b>. Now <a href="${escapeHtml(installUrl())}">choose the repositories</a> meditor may edit.`, 15000);
+      } else {
+        toast(`Signed in as <b>${escapeHtml(state.user.login)}</b>.`);
+      }
+    } catch (e) {
+      auth.save(null);
+      toast(escapeHtml(e.message), 8000);
+    }
+    return;
+  }
+  // setup_action=install|update: meditor can see a different set of repositories now
+  state.repos = null;
+  toast(auth.kind === 'app'
+    ? 'meditor can now see the repositories you chose. Open one with “open…”.'
+    : 'meditor is installed. Sign in with GitHub to use it.', 8000);
+}
+
 function signOut() {
-  saveToken(null);
+  const was = auth.signOut();
   state.gh = new GitHub(null);
   state.user = null;
   state.repos = null;
   for (const url of state.images.values()) URL.revokeObjectURL(url);
   state.images.clear();
   showAccount();
-  toast('Signed out. The token is forgotten by this browser; revoke it on GitHub if you no longer need it.');
+  toast(was?.kind === 'pat'
+    ? 'Signed out. The token is forgotten by this browser; revoke it on GitHub if you no longer need it.'
+    : 'Signed out.');
 }
 
 function showAccount() {
   const b = $('account');
   if (state.user) {
     b.innerHTML = `<img src="${escapeHtml(state.user.avatar_url)}&amp;s=40" alt=""> ${escapeHtml(state.user.login)}`;
-    b.title = 'signed in to GitHub; click to sign out or change the token';
+    b.title = 'signed in to GitHub; click to sign out';
   } else {
     b.textContent = 'sign in';
-    b.title = 'sign in to GitHub with a personal access token';
+    b.title = 'sign in to GitHub';
   }
   updateCommitButton();
 }
@@ -167,6 +234,18 @@ function openSignin() {
   $('tokenInput').value = '';
   $('signinError').hidden = true;
   $('signout').hidden = !state.user;
+  const who = $('whoBox');
+  who.hidden = !state.user;
+  if (state.user) {
+    const how = auth.kind === 'app'
+      ? `with GitHub · <a href="${escapeHtml(installUrl())}" target="_blank" rel="noopener">choose repositories ↗</a>`
+      : 'with a personal access token';
+    who.innerHTML = `<img src="${escapeHtml(state.user.avatar_url)}&amp;s=56" alt=""><span>Signed in as <b>${escapeHtml(state.user.login)}</b> ${how}</span>`;
+  }
+  $('appBox').hidden = !auth.enabled || !!state.user;
+  $('installLink').href = installUrl();
+  $('patBox').open = !auth.enabled && !state.user;
+  $('patBox').hidden = !!state.user;
   $('signinDlg').showModal();
 }
 
@@ -827,6 +906,8 @@ async function openRepoDialog() {
   $('repoFilter').value = '';
   $('repoNote').textContent = state.user ? '' : 'Sign in to list your repositories, including private ones.';
   $('repoListBox').hidden = !state.user;
+  $('repoInstall').hidden = auth.kind !== 'app';
+  $('repoInstallLink').href = installUrl();
   dlg.showModal();
   $('repoUrl').focus();
   if (state.user && !state.repos) {
@@ -1232,7 +1313,7 @@ export async function boot() {
     if (!token) return;
     $('signinGo').disabled = true;
     try {
-      await signIn(token, $('rememberToken').checked);
+      await signInWithToken(token, $('rememberToken').checked);
       $('signinDlg').close();
       toast(`Signed in as <b>${escapeHtml(state.user.login)}</b>.`);
       if (state.repo) {
@@ -1249,6 +1330,12 @@ export async function boot() {
     } finally {
       $('signinGo').disabled = false;
     }
+  });
+  $('ghSignin').addEventListener('click', () => {
+    signInWithGitHub().catch((err) => {
+      $('signinError').textContent = err.message;
+      $('signinError').hidden = false;
+    });
   });
   $('signout').addEventListener('click', () => {
     $('signinDlg').close();
@@ -1306,20 +1393,26 @@ export async function boot() {
   addEventListener('pagehide', saveDraftNow);
   addEventListener('beforeunload', saveDraftNow);
 
-  // sign in with a remembered token, then go wherever the address says
-  const token = loadToken();
-  if (token) {
+  // tokens pasted before sign-in through GitHub existed
+  const old = credStore.get(K.oldToken);
+  if (old && !auth.creds) {
+    try { rememberCreds = !!localStorage.getItem(K.oldToken); } catch { /* ignore */ }
+    auth.usePat(old);
+  }
+  credStore.del(K.oldToken);
+
+  // back from github.com, or signed in from before; then go wherever the address says
+  await finishSignIn();
+  if (auth.creds && !state.user) {
     try {
-      let remembered = false;
-      try { remembered = !!localStorage.getItem(K.token); } catch { /* no storage */ }
-      await signIn(token, remembered);
+      await useCredentials();
     } catch (e) {
-      if (e.status === 401) {
-        saveToken(null);
-        toast('The saved GitHub token no longer works; sign in again.');
+      if (e.status === 401 || e instanceof AuthError) {
+        auth.save(null);
+        toast('Your GitHub sign-in has expired; please sign in again.');
       } else {
-        // offline or rate-limited: keep using the token anyway
-        state.gh = new GitHub(token);
+        // offline or rate-limited: carry on with what we have
+        state.gh = new GitHub(auth);
       }
     }
   }
