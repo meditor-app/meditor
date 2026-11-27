@@ -126,6 +126,13 @@ node --test tests/*.test.js     # no npm install needed
 The page is `index.html` plus native ES modules in `src/`; there is no build step, and the
 same files are what GitHub Pages serves.
 
+`node --test` uses a fake GitHub. To check the GitHub code against the real thing, run the
+opt-in live test against a throwaway repository you can write to (it cleans up after itself):
+
+```
+MEDITOR_LIVE_REPO=owner/name GITHUB_TOKEN=$(gh auth token) node tests/live/github.live.mjs
+```
+
 | file | what |
 | --- | --- |
 | `src/markdown.js` | GitHub-flavoured Markdown → HTML, and the HTML sanitiser |
