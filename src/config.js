@@ -3,9 +3,9 @@
 // page offers only personal access tokens.
 export const GITHUB_APP = {
   // the app's "Client ID" (public)
-  clientId: '',
+  clientId: 'Iv23liYmOPookZ1BEEfi',
   // the app's URL name: github.com/apps/<slug>
-  slug: '',
+  slug: 'markdown-github-editor',
   // the deployed worker/relay.js, e.g. https://meditor-auth.<account>.workers.dev
-  relay: '',
+  relay: 'https://meditor-auth.ondra-lengal.workers.dev',
 };
