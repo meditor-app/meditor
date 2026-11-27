@@ -11,6 +11,8 @@
 //   POST /refresh  {refresh_token}                       -> GitHub's token response
 //   POST /revoke   {access_token}                        -> {ok: true}
 //
+// 400 means GitHub turned the request down; 502 that GitHub could not be asked right now.
+//
 // Configuration (see wrangler.toml): GITHUB_CLIENT_ID and ALLOWED_ORIGINS as variables,
 // GITHUB_CLIENT_SECRET as a secret (`npx wrangler secret put GITHUB_CLIENT_SECRET`).
 
@@ -23,16 +25,24 @@ function json(data, status, cors) {
   });
 }
 
+// The page signs the user out only on a 400 (GitHub said no to the code or refresh token);
+// a 502 means GitHub could not be asked just now, and the page keeps its credentials.
 async function askGitHub(params) {
-  const res = await fetch(TOKEN_URL, {
-    method: 'POST',
-    headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'User-Agent': 'meditor-relay' },
-    body: JSON.stringify(params),
-  });
+  let res;
+  try {
+    res = await fetch(TOKEN_URL, {
+      method: 'POST',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'User-Agent': 'meditor-relay' },
+      body: JSON.stringify(params),
+    });
+  } catch {
+    return { data: { error: 'github_unreachable', error_description: 'GitHub could not be reached' }, status: 502 };
+  }
   let data;
-  try { data = await res.json(); } catch { data = { error: 'bad_response', error_description: `GitHub answered HTTP ${res.status}` }; }
-  // GitHub reports a bad code with HTTP 200 and an `error` field.
-  return { data, status: data.error ? 400 : res.ok ? 200 : 502 };
+  try { data = await res.json(); } catch { data = null; }
+  if (!res.ok || !data) return { data: { error: 'github_unavailable', error_description: `GitHub answered HTTP ${res.status}` }, status: 502 };
+  // GitHub reports a bad code or refresh token with HTTP 200 and an `error` field.
+  return { data, status: data.error ? 400 : 200 };
 }
 
 export async function handle(request, env) {

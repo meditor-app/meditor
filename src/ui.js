@@ -3,7 +3,7 @@
 
 import { renderMarkdown, sanitizeHtml, escapeHtml, ID_PREFIX } from './markdown.js';
 import { GitHub, MARKDOWN_EXT, bytesToBase64 } from './github.js';
-import { Auth, AuthError } from './auth.js';
+import { Auth, AUTH_KEY, credentialStore, keepSignIn } from './auth.js';
 import { GITHUB_APP } from './config.js';
 import {
   parseFragment, formatFragment, parseGitHubUrl, splitRefPath, resolveRef, githubUrl, rawUrl,
@@ -150,23 +150,7 @@ const draftKey = (loc) => `${K.draft}${loc.owner}/${loc.name}@${loc.ref}:${loc.p
 
 // ---------------------------------------------------------------- account
 
-// Credentials live in localStorage, or in sessionStorage when the user asked not to be
-// remembered; reads look in both.
-let rememberCreds = true;
-const credStore = {
-  get(k) {
-    try { return localStorage.getItem(k) ?? sessionStorage.getItem(k); } catch { return null; }
-  },
-  set(k, v) {
-    try {
-      (rememberCreds ? sessionStorage : localStorage).removeItem(k);
-      (rememberCreds ? localStorage : sessionStorage).setItem(k, v);
-    } catch { /* private mode: lasts for this page only */ }
-  },
-  del(k) {
-    try { localStorage.removeItem(k); sessionStorage.removeItem(k); } catch { /* ignore */ }
-  },
-};
+const credStore = credentialStore(() => localStorage, () => sessionStorage);
 const auth = new Auth(GITHUB_APP, credStore);
 const installUrl = () => `https://github.com/apps/${GITHUB_APP.slug}/installations/new`;
 
@@ -183,7 +167,7 @@ async function useCredentials() {
 
 async function signInWithToken(token, remember) {
   const user = await new GitHub(token).user();
-  rememberCreds = remember;
+  credStore.remember = remember;
   auth.usePat(token);
   state.gh = new GitHub(auth);
   state.user = user;
@@ -214,9 +198,11 @@ async function finishSignIn() {
     return;
   }
   if (q.has('code')) {
+    let issued = false;
     try {
-      rememberCreds = true;
+      credStore.remember = true;
       await auth.complete(q.get('code'), q.get('state'), pending);
+      issued = true;
       forgetRepos();
       await useCredentials();
       const inst = await state.gh.request('GET', '/user/installations?per_page=1').catch(() => null);
@@ -226,7 +212,9 @@ async function finishSignIn() {
         toast(`Signed in as <b>${escapeHtml(state.user.login)}</b>.`);
       }
     } catch (e) {
-      auth.save(null);
+      // A code GitHub would not take leaves things as they were. After it, an outage keeps the
+      // new token (boot tries the user check again); GitHub refusing it revokes it.
+      if (issued && !keepSignIn(e)) auth.signOut();
       toast(escapeHtml(e.message), 8000);
     }
     return;
@@ -240,15 +228,34 @@ async function finishSignIn() {
 
 function signOut() {
   const was = auth.signOut();
+  signedOut();
+  toast(was?.kind === 'pat'
+    ? 'Signed out. The token is forgotten by this browser; revoke it on GitHub if you no longer need it.'
+    : 'Signed out.');
+}
+
+function signedOut() {
   state.gh = new GitHub(null);
   state.user = null;
   forgetRepos();
   for (const url of state.images.values()) URL.revokeObjectURL(url);
   state.images.clear();
   showAccount();
-  toast(was?.kind === 'pat'
-    ? 'Signed out. The token is forgotten by this browser; revoke it on GitHub if you no longer need it.'
-    : 'Signed out.');
+}
+
+/** Another tab signed out, or signed in as someone else: follow it. */
+async function accountChanged() {
+  const was = state.user;
+  signedOut(); // at once, so nothing is committed under the old name meanwhile
+  if (!auth.creds) {
+    if (was) toast('Signed out in another tab.');
+    return;
+  }
+  try {
+    await useCredentials();
+  } catch (e) {
+    if (keepSignIn(e)) state.gh = new GitHub(auth);
+  }
 }
 
 function showAccount() {
@@ -2581,6 +2588,9 @@ export async function boot() {
     }
   });
   addEventListener('popstate', route);
+  // signing in or out in another tab (sessionStorage changes are not shared, so no event for them)
+  auth.onchange = accountChanged;
+  addEventListener('storage', (e) => { if (e.key === AUTH_KEY || e.key === null) auth.sync(); });
   addEventListener('hashchange', route);
   addEventListener('pagehide', saveDraftNow);
   addEventListener('beforeunload', (e) => {
@@ -2593,7 +2603,7 @@ export async function boot() {
   // tokens pasted before sign-in through GitHub existed
   const old = credStore.get(K.oldToken);
   if (old && !auth.creds) {
-    try { rememberCreds = !!localStorage.getItem(K.oldToken); } catch { /* ignore */ }
+    try { credStore.remember = !!localStorage.getItem(K.oldToken); } catch { /* ignore */ }
     auth.usePat(old);
   }
   credStore.del(K.oldToken);
@@ -2604,7 +2614,7 @@ export async function boot() {
     try {
       await useCredentials();
     } catch (e) {
-      if (e.status === 401 || e instanceof AuthError) {
+      if (!keepSignIn(e)) {
         auth.save(null);
         toast('Your GitHub sign-in has expired; please sign in again.');
       } else {

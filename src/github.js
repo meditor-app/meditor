@@ -126,8 +126,9 @@ export class GitHub {
     });
     const remaining = res.headers?.get?.('x-ratelimit-remaining');
     if (remaining != null) this.rate = { remaining: +remaining, reset: +res.headers.get('x-ratelimit-reset') };
-    // an app token can expire early (revoked, clock skew): renew it once and try again
-    if (res.status === 401 && !retried && this.auth?.refresh && await this.auth.refresh()) {
+    // an app token can expire early (revoked, clock skew): renew it once and try again. A
+    // renewal that failed for now throws its own error, not the 401 that would end the sign-in.
+    if (res.status === 401 && !retried && this.auth?.renew && await this.auth.renew()) {
       return this.request(method, path, { body, accept, raw }, true);
     }
     if (!res.ok) {
