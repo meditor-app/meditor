@@ -179,13 +179,12 @@ a { color: var(--link); }
   min-height: 0;
   position: relative;
 }
-.workspace.nofiles { grid-template-columns: 0 minmax(0, var(--editor-fr, 1fr)) minmax(0, var(--preview-fr, 1fr)); column-gap: 0; }
-.workspace.nofiles .pane + .pane { margin-left: 8px; }
+/* without the file list, the panes take its column: a hidden grid item leaves the grid */
+.workspace.nofiles { grid-template-columns: minmax(0, var(--editor-fr, 1fr)) minmax(0, var(--preview-fr, 1fr)); }
 .workspace.nofiles .files { display: none; }
 .workspace[data-view="edit"] .previewpane, .workspace[data-view="preview"] .editorpane { display: none; }
 .workspace[data-view="edit"], .workspace[data-view="preview"] { grid-template-columns: var(--files-w, 240px) minmax(0, 1fr); }
-.workspace.nofiles[data-view="edit"], .workspace.nofiles[data-view="preview"] { grid-template-columns: 0 minmax(0, 1fr); }
-.workspace.nofiles[data-view="edit"] .pane, .workspace.nofiles[data-view="preview"] .pane { margin-left: 0; }
+.workspace.nofiles[data-view="edit"], .workspace.nofiles[data-view="preview"] { grid-template-columns: minmax(0, 1fr); }
 
 /* handles in the gaps between panels: drag to resize, double-click to reset */
 .split { position: absolute; z-index: 2; touch-action: none; top: 0; bottom: 0; width: 8px; cursor: col-resize; }
@@ -449,7 +448,6 @@ a.minor:hover { color: var(--accent); }
 @media (max-width: 900px) {
   .app { height: auto; min-height: 100vh; grid-template-rows: none; padding: 0 8px 8px; }
   .workspace, .workspace.nofiles, .workspace[data-view] { grid-template-columns: minmax(0, 1fr) !important; }
-  .workspace.nofiles .pane + .pane { margin-left: 0; }
   .files { max-height: 40vh; }
   .pane { min-height: 70vh; }
   .split { display: none !important; }
