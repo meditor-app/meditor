@@ -17,6 +17,7 @@
 // GITHUB_CLIENT_SECRET as a secret (`npx wrangler secret put GITHUB_CLIENT_SECRET`).
 
 const TOKEN_URL = 'https://github.com/login/oauth/access_token';
+const MAX_BODY = 16 * 1024;
 
 function json(data, status, cors) {
   return new Response(JSON.stringify(data), {
@@ -63,8 +64,15 @@ export async function handle(request, env) {
   if (request.method !== 'POST') return json({ error: 'method_not_allowed' }, 405, cors);
   if (!env.GITHUB_CLIENT_ID || !env.GITHUB_CLIENT_SECRET) return json({ error: 'relay_not_configured' }, 500, cors);
 
+  // a JSON object of a few short strings: anything else (null, an array, a huge body) is refused
   let body;
-  try { body = await request.json(); } catch { return json({ error: 'bad_request' }, 400, cors); }
+  if (Number(request.headers.get('Content-Length')) > MAX_BODY) return json({ error: 'bad_request' }, 400, cors);
+  try {
+    const text = await request.text();
+    if (text.length > MAX_BODY) throw new Error('too large');
+    body = JSON.parse(text);
+  } catch { return json({ error: 'bad_request' }, 400, cors); }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return json({ error: 'bad_request' }, 400, cors);
   const str = (v) => (typeof v === 'string' && v.length < 2048 ? v : undefined);
   const client = { client_id: env.GITHUB_CLIENT_ID, client_secret: env.GITHUB_CLIENT_SECRET };
   const path = new URL(request.url).pathname;

@@ -171,7 +171,7 @@ test('relative references resolve against the document', () => {
   assert.equal(resolveRef('/README.md#x', loc).hash, 'x');
   assert.equal(resolveRef('#top', loc).kind, 'anchor');
   assert.equal(resolveRef('https://x.org', loc).kind, 'external');
-  assert.equal(resolveRef('../../../x.md', loc).kind, 'external');
+  assert.equal(resolveRef('../../../x.md', loc).kind, 'outside');
   assert.equal(joinPath('a/b', './c/../d.md'), 'a/b/d.md');
   assert.equal(joinPath('a/b', '../d.md'), 'a/d.md');
   assert.equal(githubUrl(loc, 'docs/a b.md'), 'https://github.com/o/r/blob/main/docs/a%20b.md');

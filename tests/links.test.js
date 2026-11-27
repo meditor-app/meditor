@@ -90,8 +90,42 @@ test('joinPath refuses climbs, backslashes and encoded dots, also in the directo
 
 test('links and images in a document cannot reach outside the repository', () => {
   // a document whose own path climbs (it cannot be opened now, but resolveRef must not trust it)
-  assert.equal(resolveRef('img.png', { path: '../../victim/private/contents/doc.md' }).kind, 'external');
-  assert.equal(resolveRef('%252e%252e/%252e%252e/x.png', { path: 'docs/a.md' }).kind, 'external');
-  assert.equal(resolveRef('..%5c..%5cx.png', { path: 'docs/a.md' }).kind, 'external');
+  assert.equal(resolveRef('img.png', { path: '../../victim/private/contents/doc.md' }).kind, 'outside');
+  assert.equal(resolveRef('%252e%252e/%252e%252e/x.png', { path: 'docs/a.md' }).kind, 'outside');
+  assert.equal(resolveRef('..%5c..%5cx.png', { path: 'docs/a.md' }).kind, 'outside');
   assert.deepEqual([...referencedPaths('![a](../../../x.png) ![b](img/%252e%252e/y.png) ![c](ok.png)', 'docs/a.md')], ['docs/ok.png']);
+});
+
+// #31: navigation and links
+test('raw URLs with a full ref name open the branch (or tag) and the path', () => {
+  const p = parseGitHubUrl('https://raw.githubusercontent.com/o/r/refs/heads/main/README.md');
+  assert.deepEqual(splitRefPath(p.rest, ['main']), { ref: 'main', path: 'README.md' });
+  const f = parseGitHubUrl('https://raw.githubusercontent.com/o/r/refs/heads/feat/x/docs/a.md');
+  assert.deepEqual(splitRefPath(f.rest, ['main', 'feat/x']), { ref: 'feat/x', path: 'docs/a.md' });
+  assert.equal(parseGitHubUrl('https://raw.githubusercontent.com/o/r/refs/tags/v1.0/a.md').rest, 'v1.0/a.md');
+  assert.equal(parseGitHubUrl('https://github.com/o/r/blob/refs/heads/main/a.md').rest, 'main/a.md');
+  // the old form is unchanged
+  assert.equal(parseGitHubUrl('https://raw.githubusercontent.com/o/r/main/README.md').rest, 'main/README.md');
+});
+
+test('a malformed percent escape in a pasted URL is no GitHub URL (no exception)', () => {
+  assert.equal(parseGitHubUrl('https://github.com/o/r/blob/main/100%.md'), null);
+  assert.equal(parseGitHubUrl('https://raw.githubusercontent.com/o/r/main/%zz.md'), null);
+});
+
+test('a relative link above the repository root leads to github.com, never relative to the editor', () => {
+  const root = { owner: 'o', name: 'r', ref: 'main', path: 'a.md' };
+  assert.deepEqual(resolveRef('../other/x.md', root), { kind: 'outside', url: 'https://github.com/o/r/blob/other/x.md' });
+  assert.deepEqual(resolveRef('../../x.md', root), { kind: 'outside', url: 'https://github.com/o/r/x.md' });
+  // as on github.com: the README's way to the issues
+  assert.deepEqual(resolveRef('../../issues', root), { kind: 'outside', url: 'https://github.com/o/r/issues' });
+  assert.equal(resolveRef('../../../../../../x', { ...root, path: 'docs/a.md' }).url, 'https://github.com/x');
+  // refused segments too, and whatever a backslash would turn into it stays on github.com
+  for (const u of ['..%5c..%5cx.png', '%252e%252e/x', '\\\\evil.example/x', '/\\evil.example/x']) {
+    const r = resolveRef(u, root);
+    assert.equal(r.kind, 'outside', u);
+    assert.equal(new URL(r.url).origin, 'https://github.com', u);
+  }
+  // without a repository to point to, the repository's page (still absolute)
+  assert.match(resolveRef('../x.md', { path: 'a.md' }).url, /^https:\/\/github\.com\//);
 });

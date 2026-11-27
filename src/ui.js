@@ -1,9 +1,9 @@
 // The page: account, repository and file navigation, the editor, the preview, commits.
 // The only module that touches the DOM.
 
-import { renderMarkdown, sanitizeHtml, escapeHtml, ID_PREFIX } from './markdown.js';
+import { renderMarkdown, sanitizeHtml, escapeHtml, isExternalLink, ID_PREFIX } from './markdown.js';
 import { GitHub, MARKDOWN_EXT, bytesToBase64, recordCommit, encodeFile, PLAIN_FORMAT } from './github.js';
-import { Auth, AUTH_KEY, credentialStore, keepSignIn } from './auth.js';
+import { Auth, AUTH_KEY, credentialStore, keepSignIn, signInReturn } from './auth.js';
 import { GITHUB_APP } from './config.js';
 import {
   parseFragment, formatFragment, parseGitHubUrl, splitRefPath, resolveRef, githubUrl, rawUrl,
@@ -22,6 +22,7 @@ import { tokenizeLine, retokenize, START, rangesByLine, lineHtml } from './mdsyn
 import { proposeChange } from './fork.js';
 import { proposeImagePath, imageMarkdown, referencedPaths, formatSize } from './images.js';
 import { Drafts, newFileText } from './drafts.js';
+import { loadLocation, latest } from './nav.js';
 
 const $ = (id) => document.getElementById(id);
 const IS_MAC = /mac|iphone|ipad/i.test(navigator.userAgentData?.platform || navigator.platform || '');
@@ -59,7 +60,7 @@ request.
 
 | you type | you get |
 | --- | --- |
-| \`**bold**\`, \`_italic_\`, \`~~struck~~\` | **bold**, _italic_, ~~struck~~ |
+| \`**bold**\`, \`*italic*\`, \`~~struck~~\` | **bold**, *italic*, ~~struck~~ |
 | \`[a link](https://github.com)\` | [a link](https://github.com) |
 | \`- [ ] a task\` | a box you can tick, here too |
 
@@ -83,6 +84,14 @@ const store = {
     try { localStorage.removeItem(k); } catch { /* ignore */ }
   },
 };
+
+// The theme chosen with ◐ ('light' or 'dark'; null follows the system), kept in the prefs. It
+// is set the moment this module runs, before boot() and, as a rule, before the page is first
+// drawn (index.html loads main.js from <head>; the Content Security Policy allows no inline
+// script that could do it sooner). app.css makes native controls follow it (color-scheme).
+let theme = ((t) => (t === 'light' || t === 'dark' ? t : null))(store.get(K.prefs, {})?.theme);
+if (theme) document.documentElement.dataset.theme = theme;
+
 const drafts = new Drafts(store);
 
 const state = {
@@ -145,7 +154,6 @@ async function busy(label, fn) {
   }
 }
 
-const sameRepo = (a, b) => a && b && a.owner.toLowerCase() === b.owner.toLowerCase() && a.name.toLowerCase() === b.name.toLowerCase();
 const draftKey = (loc) => `${K.draft}${loc.owner}/${loc.name}@${loc.ref}:${loc.path}`;
 
 // ---------------------------------------------------------------- account
@@ -187,21 +195,22 @@ async function signInWithGitHub() {
  * repositories (?installation_id=…&setup_action=…). Returns where to go next.
  */
 async function finishSignIn() {
-  const q = new URLSearchParams(location.search);
-  if (!q.has('code') && !q.has('setup_action') && !q.has('error')) return;
+  if (!signInReturn(location.search, null)) return;
   let pending = null;
   try { pending = JSON.parse(sessionStorage.getItem(K.pending) || 'null'); sessionStorage.removeItem(K.pending); } catch { /* none */ }
+  const back = signInReturn(location.search, pending);
   // drop the query: the code is single-use and should not stay in the address or history
   history.replaceState(null, '', location.pathname + (pending?.hash || location.hash));
-  if (q.has('error')) {
-    toast(`GitHub did not sign you in: ${escapeHtml(q.get('error_description') || q.get('error'))}`, 8000);
+  if (back.kind === 'ignore') return; // an error that answers no sign-in of this tab
+  if (back.kind === 'error') {
+    toast(`GitHub did not sign you in: ${escapeHtml(back.message)}`, 8000);
     return;
   }
-  if (q.has('code')) {
+  if (back.kind === 'code') {
     let issued = false;
     try {
       credStore.remember = true;
-      await auth.complete(q.get('code'), q.get('state'), pending);
+      await auth.complete(back.code, back.state, pending);
       issued = true;
       forgetRepos();
       await useCredentials();
@@ -307,8 +316,11 @@ function route() {
   return routing;
 }
 
-async function applyLocation(loc) {
-  if (!loc) {
+// a branch list asked for one repository must not land in another (#31)
+const branchRequests = latest();
+
+async function applyLocation(want) {
+  if (!want) {
     if (state.loc) saveDraftNow();
     state.repo = null;
     state.tree = null;
@@ -316,54 +328,39 @@ async function applyLocation(loc) {
     renderTree();
     return;
   }
-  if (!sameRepo(loc, state.repo)) {
-    try {
-      await busy(`opening ${loc.owner}/${loc.name}`, async () => {
-        state.repo = await state.gh.repo(loc.owner, loc.name);
-        state.branches = [];
-        state.tree = null;
-        state.open = new Set();
-      });
-    } catch {
-      state.repo = null;
-      renderTree();
-      if (!state.loc) openScratch();
-      return;
-    }
-    // the branch list is only needed for the selector; do not hold the file up for it
-    state.gh.branches(state.repo.owner, state.repo.name).then((bs) => {
-      state.branches = bs;
-      renderBranches();
-    }).catch(() => {});
-  }
-  const repo = state.repo;
-  if (!loc.ref) {
-    go({ owner: repo.owner, name: repo.name, ref: repo.defaultBranch, path: loc.path }, true);
+  let r;
+  try {
+    r = await loadLocation(state.gh, { repo: state.repo, tree: state.tree, loc: state.loc }, want, busy);
+  } catch {
+    // nothing has changed (busy said why): the address goes back to what is still open. With
+    // nothing open it is kept, so that reloading (signed in, say) tries it again.
+    if (state.repo) history.replaceState(null, '', formatFragment(state.loc || { owner: state.repo.owner, name: state.repo.name, ref: state.tree?.ref }));
+    else if (!state.loc) openScratch();
     return;
   }
-  if (!state.tree || state.tree.ref !== loc.ref) {
-    try {
-      await busy('reading the file list', async () => {
-        const t = await state.gh.tree(repo.owner, repo.name, loc.ref);
-        state.tree = { ...t, ref: loc.ref };
-      });
-    } catch {
-      state.tree = { truncated: false, entries: [], ref: loc.ref };
-    }
+  const { repo, tree, loc } = r;
+  if (!want.ref || !want.path) history.replaceState(null, '', formatFragment(loc));
+  if (r.branches) {
+    const current = branchRequests.begin();
+    state.branches = [];
+    state.open = new Set();
+    r.branches.then((bs) => {
+      if (!bs || !current()) return;
+      state.branches = bs;
+      renderBranches();
+    });
   }
-  renderBranches();
+  state.repo = repo;
+  state.tree = tree;
   if (!loc.path) {
-    const md = state.tree.entries.filter((e) => e.type === 'file' && MARKDOWN_EXT.test(e.path));
-    const readme = md.find((e) => /^readme\.(md|markdown)$/i.test(e.path)) || md.find((e) => !e.path.includes('/')) || md[0];
-    if (readme) {
-      go({ owner: repo.owner, name: repo.name, ref: loc.ref, path: readme.path }, true);
-      return;
-    }
-    renderTree();
+    openScratch();
+    renderBranches();
     status('This branch has no Markdown files. Create one with “＋ new”.', 'warn');
     return;
   }
-  await openFile({ owner: repo.owner, name: repo.name, ref: loc.ref, path: loc.path });
+  if (!r.same) showFile(loc, r.file);
+  else renderTree(); // the text stays, but the file list may be another (a fork's)
+  renderBranches();
 }
 
 function openScratch() {
@@ -377,15 +374,9 @@ function openScratch() {
   draftWarning();
 }
 
-async function openFile(loc) {
-  if (state.loc && draftKey(state.loc) === draftKey(loc)) return;
+/** Shows the file at `loc`, as getFile read it (null: a new file). */
+function showFile(loc, file) {
   if (state.loc) saveDraftNow();
-  let file;
-  try {
-    file = await busy(`opening ${loc.path}`, () => state.gh.getFile(loc.owner, loc.name, loc.path, loc.ref));
-  } catch {
-    return;
-  }
   state.loc = loc;
   // the text has LF line endings and no BOM, as the textarea will; `format` writes them back
   state.doc = file ? { base: file.text, sha: file.sha, isNew: false, format: file.format }
@@ -515,7 +506,7 @@ const sel = () => ({ text: src().value, start: src().selectionStart, end: src().
 
 const COMMANDS = {
   bold: (s) => wrap(s, '**', '**', 'bold text'),
-  italic: (s) => wrap(s, '_', '_', 'italic text'),
+  italic: (s) => wrap(s, '*', '*', 'italic text'), // '_' does not work inside a word
   strike: (s) => wrap(s, '~~', '~~', 'struck text'),
   code: (s) => wrap(s, '`', '`', 'code'),
   h1: (s) => heading(s, 1),
@@ -1192,6 +1183,8 @@ function resolveLink(url) {
   const loc = state.loc;
   if (!loc) return url;
   const r = resolveRef(url, loc);
+  // above the repository's root: on github.com, never relative to the editor's page (#31)
+  if (r.kind === 'outside') return r.url;
   if (r.kind !== 'repo') return url;
   if (MARKDOWN_EXT.test(r.path)) return formatFragment({ ...loc, path: r.path });
   const isDir = state.tree?.entries.some((e) => e.type === 'dir' && e.path === r.path) || url.endsWith('/') || r.path === '';
@@ -1238,14 +1231,16 @@ async function renderPreview(now = false) {
 /** Raw HTML in the document, and GitHub's renderer, leave relative links and images as written. */
 function fixRelative(root) {
   for (const a of root.querySelectorAll('a[href]')) {
-    const href = a.getAttribute('href');
-    if (/^https?:/i.test(href)) {
+    let href = a.getAttribute('href');
+    if (!/^[a-z][a-z0-9+.-]*:|^\/\/|^#/i.test(href)) {
+      href = resolveLink(href);
+      a.setAttribute('href', href);
+    }
+    if (isExternalLink(href)) {
       // never navigate the editor away (or hand the new page a handle on it)
       a.target = '_blank';
       a.rel = 'noopener noreferrer nofollow';
     }
-    if (/^[a-z][a-z0-9+.-]*:|^\/\/|^#/i.test(href)) continue;
-    a.setAttribute('href', resolveLink(href));
   }
   for (const img of root.querySelectorAll('img[src]')) {
     const s = img.getAttribute('src');
@@ -1443,7 +1438,8 @@ function renderTree() {
     b.className = 'node' + (path === cur ? ' current' : '');
     b.dataset.path = path;
     b.title = path;
-    b.innerHTML = `<span class="ic">▤</span><span class="nm">${escapeHtml(label)}</span>${drafts.has(path) ? '<span class="draft" title="unsaved changes in this browser">●</span>' : ''}`;
+    if (path === cur) b.setAttribute('aria-current', 'true');
+    b.innerHTML = `<span class="ic" aria-hidden="true">▤</span><span class="nm">${escapeHtml(label)}</span>${drafts.has(path) ? '<span class="draft" title="unsaved changes in this browser" aria-hidden="true">●</span><span class="sr-only">, unsaved changes</span>' : ''}`;
     const acts = document.createElement('span');
     acts.className = 'acts';
     for (const [act, text, title, cls] of [['move', '✎', 'rename or move…', ''], ['delete', '✕', 'delete…', 'del']]) {
@@ -1495,7 +1491,7 @@ function renderTree() {
         b.dataset.dir = path;
         const isOpen = state.open.has(path);
         b.setAttribute('aria-expanded', String(isOpen));
-        b.innerHTML = `<span class="ic">${isOpen ? '▾' : '▸'}</span><span class="nm">${escapeHtml(d)}/</span>`;
+        b.innerHTML = `<span class="ic" aria-hidden="true">${isOpen ? '▾' : '▸'}</span><span class="nm">${escapeHtml(d)}/</span>`;
         li.append(b);
         if (isOpen) {
           const inner = document.createElement('ul');
@@ -1535,8 +1531,8 @@ function onTreeClick(e) {
     return;
   }
   if (b.dataset.path) closeDrawer();
-  if (b.dataset.path && state.loc) go({ ...state.loc, path: b.dataset.path });
-  else if (b.dataset.path && state.repo) go({ owner: state.repo.owner, name: state.repo.name, ref: state.tree.ref, path: b.dataset.path });
+  // the file list's repository and branch, which are also the open file's (#31)
+  if (b.dataset.path && state.repo && state.tree) go({ owner: state.repo.owner, name: state.repo.name, ref: state.tree.ref, path: b.dataset.path });
 }
 
 function renderBranches() {
@@ -1967,7 +1963,7 @@ async function propose({ text, title, body, message }) {
   note += r.pull ? ` Opened ${link(r.pull.html_url, `pull request #${r.pull.number}`)} in ${escapeHtml(loc.owner)}/${escapeHtml(loc.name)}.`
     : ` ${link(r.compare, 'Open the pull request on GitHub')}.`;
   // Go on in the fork, on the new branch: its file list, its branches, and commits that go
-  // to the pull request. The text is kept (state.loc is set first, so openFile leaves it).
+  // to the pull request. The text is kept (state.loc is set first, so applyLocation does not read it again).
   const next = { owner: r.fork.owner, name: r.fork.name, ref: branch, path: loc.path };
   state.loc = next;
   drafts.rename(draftKey(next));
@@ -2251,6 +2247,7 @@ function savePrefs() {
     renderer: state.renderer,
     sync: state.sync,
     highlight: hl.on,
+    theme,
   });
 }
 
@@ -2382,7 +2379,9 @@ function initTheme() {
   $('theme').addEventListener('click', () => {
     const cur = document.documentElement.dataset.theme
       || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-    document.documentElement.dataset.theme = cur === 'dark' ? 'light' : 'dark';
+    theme = cur === 'dark' ? 'light' : 'dark';
+    document.documentElement.dataset.theme = theme;
+    savePrefs();
   });
 }
 
@@ -2480,6 +2479,11 @@ export async function boot() {
   initFind();
   $('previewScroll').addEventListener('scroll', () => syncFrom('preview'), { passive: true });
   $('preview').addEventListener('click', onPreviewClick);
+  // an image that loads (or is swapped in) or a <details> that opens moves the blocks below
+  // it; neither event bubbles, so they are caught on the way down (#31)
+  const moved = () => { previewBlocks = null; };
+  $('preview').addEventListener('load', moved, true);
+  $('preview').addEventListener('toggle', moved, true);
   $('renderer').addEventListener('change', (e) => {
     state.renderer = e.target.value;
     savePrefs();
@@ -2496,8 +2500,17 @@ export async function boot() {
   $('newFile').addEventListener('click', openNewDialog);
   $('refresh').addEventListener('click', async () => {
     if (!state.repo) return;
+    const repo = state.repo;
     const ref = state.tree?.ref;
-    state.tree = { ...(await busy('reading the file list', () => state.gh.tree(state.repo.owner, state.repo.name, ref))), ref };
+    let t;
+    try {
+      t = await busy('reading the file list', () => state.gh.tree(repo.owner, repo.name, ref));
+    } catch {
+      return; // busy said why
+    }
+    // the editor may have moved on to another repository or branch meanwhile (#31)
+    if (state.repo !== repo || state.tree?.ref !== ref) return;
+    state.tree = { ...t, ref };
     renderTree();
   });
   $('branch').addEventListener('change', (e) => {
