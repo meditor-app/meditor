@@ -119,6 +119,14 @@ export function removeRecent(list, loc) {
   return list.filter((r) => recentKey(r) !== k);
 }
 
+/** The recent-files list after the file at `loc` was renamed to `path` (it keeps its place). */
+export function renameRecent(list, loc, path) {
+  const k = recentKey(loc);
+  const to = recentKey({ ...loc, path });
+  // a file already listed under the new name gives way to the renamed one
+  return list.filter((r) => recentKey(r) !== to || to === k).map((r) => (recentKey(r) === k ? { ...r, path } : r));
+}
+
 /** "just now", "5 min ago", "3 h ago", "yesterday", "4 days ago", or a date. */
 export function ago(at, now) {
   const s = Math.max(0, (now - at) / 1000);

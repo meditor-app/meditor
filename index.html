@@ -255,6 +255,25 @@
   </form>
 </dialog>
 
+<dialog id="fileDlg" class="dlg">
+  <form method="dialog" id="fileForm">
+    <h2><span id="fileVerb"></span> <span id="fileFrom" class="mono"></span></h2>
+    <label class="field" id="fileToBox">new path in the repository
+      <input id="fileTo" type="text" autocomplete="off" spellcheck="false" class="mono">
+    </label>
+    <label class="field" id="fileMsgBox">commit message
+      <input id="fileMsg" type="text" autocomplete="off">
+    </label>
+    <p id="fileNote" class="help"></p>
+    <p id="fileError" class="error" hidden></p>
+    <div class="actions">
+      <span class="spacer"></span>
+      <button type="button" data-close>cancel</button>
+      <button id="fileGo" class="primary"></button>
+    </div>
+  </form>
+</dialog>
+
 <div id="toast" class="toast" role="alert" hidden></div>
 <script type="module" src="src/main.js"></script>
 </body>
