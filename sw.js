@@ -25,6 +25,7 @@ const SHELL = [
   'src/fork.js',
   'src/images.js',
   'src/drafts.js',
+  'src/nav.js',
   'icons/icon.svg',
   'icons/icon-192.png',
 ];
