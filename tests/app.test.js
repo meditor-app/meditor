@@ -21,7 +21,7 @@ test('the manifest is valid and its icons exist', () => {
 
 test('Pages publishes everything the page refers to', () => {
   const wf = read('.github/workflows/pages.yml');
-  for (const f of ['index.html', 'manifest.webmanifest', 'sw.js', 'icons', 'src']) assert.match(wf, new RegExp(`cp -r .*\\b${f.replace('.', '\\.')}\\b`));
+  for (const f of ['index.html', 'manifest.webmanifest', 'sw.js', 'icons', 'src', 'meditor']) assert.match(wf, new RegExp(`cp -r .*\\b${f.replace('.', '\\.')}\\b`));
 });
 
 test('the Content Security Policy allows what the page needs and nothing inline', async () => {
