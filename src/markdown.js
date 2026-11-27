@@ -60,6 +60,17 @@ export function safeUrl(url, isImage = false) {
   return true;
 }
 
+/**
+ * it, so protocol-relative `//host` (and `/\host`, `\\host`) count, as do http(s) URLs.
+ * it, so protocol-relative `//host` (and `/\\host`, `\\\\host`) count, as do http(s) URLs.
+ */
+export function isExternalLink(href) {
+  try {
+    const u = new URL(href, 'https://meditor.invalid/');
+    return /^https?:$/.test(u.protocol) && u.host !== 'meditor.invalid';
+  } catch { return false; }
+}
+
 const ATTR = /([^\s"'>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
 
 function sanitizeTag(tag) {
@@ -689,7 +700,7 @@ class Renderer {
   anchor(href, inner, title) {
     const url = this.opts.resolveLink ? this.opts.resolveLink(href) : href;
     if (!safeUrl(url)) return inner;
-    const ext = /^https?:/i.test(url) ? ' rel="nofollow noopener" target="_blank"' : '';
+    const ext = isExternalLink(url) ? ' rel="nofollow noopener" target="_blank"' : '';
     return `<a href="${escapeHtml(encodeUrl(url))}"${title ? ` title="${escapeHtml(title)}"` : ''}${ext}>${inner}</a>`;
   }
 

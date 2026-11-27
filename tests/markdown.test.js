@@ -1,6 +1,19 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { renderMarkdown, sanitizeHtml, slugify } from '../src/markdown.js';
+import { renderMarkdown, sanitizeHtml, slugify, isExternalLink } from '../src/markdown.js';
+
+test('links to other sites open in a new tab, protocol-relative ones too (#32)', () => {
+  // `//host` used to replace the editor in its own tab
+  assert.equal(renderMarkdown('[a](//evil.example/login) [b](https://x.y)'),
+    '<p data-line="0"><a href="//evil.example/login" rel="nofollow noopener" target="_blank">a</a> <a href="https://x.y" rel="nofollow noopener" target="_blank">b</a></p>');
+  // raw and GitHub-rendered HTML get target and rel from ui.js fixRelative, by the same test
+  for (const href of ['//evil.example', '/\\evil.example', '\\\\evil.example', 'https://x.y', 'HTTP://x.y', 'http:x.y', ' //evil.example', '/\t/evil.example']) {
+    assert.ok(isExternalLink(href), href);
+  }
+  for (const href of ['#x', '#repo=a/b&path=c.md', 'x.md', '/x.md', '../x.md', 'mailto:a@b.c', 'tel:1']) {
+    assert.ok(!isExternalLink(href), href);
+  }
+});
 
 // Compare without the data-line attributes, which only the page cares about.
 const md = (s, o) => renderMarkdown(s, o).replace(/ data-line="\d+"/g, '').trim();
