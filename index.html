@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>meditor — Markdown editor for GitHub</title>
+<meta name="description" content="Edit the Markdown files of your GitHub repositories in the browser, side by side with the rendered page.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2016%2016%22%3E%3Crect%20x%3D%221%22%20y%3D%222.5%22%20width%3D%2214%22%20height%3D%2211%22%20rx%3D%221.5%22%20fill%3D%22%23fff%22%20stroke%3D%22%2314202a%22%20stroke-width%3D%221.2%22%2F%3E%3Cpath%20d%3D%22M3.5%2011V5.5L5.5%208L7.5%205.5V11%22%20fill%3D%22none%22%20stroke%3D%22%2314202a%22%20stroke-width%3D%221.2%22%2F%3E%3Cpath%20d%3D%22M11.5%205.5V10.5M9.6%208.8L11.5%2010.7L13.4%208.8%22%20fill%3D%22none%22%20stroke%3D%22%23a8175f%22%20stroke-width%3D%221.2%22%2F%3E%3C%2Fsvg%3E">
+<link rel="stylesheet" href="src/app.css">
+</head>
+<body>
+<div class="app">
+  <header class="masthead">
+    <span class="wordmark">m<span>editor</span></span>
+    <span class="tagline">edit the Markdown in your GitHub repositories</span>
+    <span class="spacer"></span>
+    <button id="account" type="button" title="sign in to GitHub with a personal access token">sign in</button>
+    <a class="ghlink" href="https://github.com/ondrik/meditor" title="source on GitHub">source</a>
+    <button id="theme" type="button" title="switch light / dark theme">◐</button>
+  </header>
+
+  <nav class="toolbar" aria-label="document">
+    <div class="group">
+      <button id="openRepo" type="button" title="open a repository (Ctrl+O)">open…</button>
+      <button id="toggleFiles" type="button" title="show / hide the file list" aria-pressed="true">files</button>
+    </div>
+    <div class="group fmt" id="fmt">
+      <button type="button" data-cmd="bold" title="bold (Ctrl+B)"><b>B</b></button>
+      <button type="button" data-cmd="italic" title="italic (Ctrl+I)"><i>I</i></button>
+      <button type="button" data-cmd="strike" title="strikethrough"><s>S</s></button>
+      <button type="button" data-cmd="code" title="inline code (Ctrl+E)"><code>&lt;/&gt;</code></button>
+    </div>
+    <div class="group fmt">
+      <button type="button" data-cmd="h1" title="heading 1 (Ctrl+1)">H1</button>
+      <button type="button" data-cmd="h2" title="heading 2 (Ctrl+2)">H2</button>
+      <button type="button" data-cmd="h3" title="heading 3 (Ctrl+3)">H3</button>
+    </div>
+    <div class="group fmt">
+      <button type="button" data-cmd="ul" title="bulleted list">•</button>
+      <button type="button" data-cmd="ol" title="numbered list">1.</button>
+      <button type="button" data-cmd="task" title="task list">☐</button>
+      <button type="button" data-cmd="quote" title="quote">❝</button>
+    </div>
+    <div class="group fmt">
+      <button type="button" data-cmd="link" title="link (Ctrl+K)">link</button>
+      <button type="button" data-cmd="image" title="image">img</button>
+      <button type="button" data-cmd="codeblock" title="code block">```</button>
+      <button type="button" data-cmd="table" title="table">table</button>
+      <button type="button" data-cmd="rule" title="horizontal rule">—</button>
+    </div>
+    <span class="spacer"></span>
+    <div class="group seg" role="radiogroup" aria-label="view">
+      <button type="button" data-view="edit" role="radio" title="Markdown only">source</button>
+      <button type="button" data-view="split" role="radio" title="side by side">both</button>
+      <button type="button" data-view="preview" role="radio" title="rendered only">rendered</button>
+    </div>
+    <div class="group">
+      <button id="download" type="button" title="download this file">download</button>
+      <button id="commit" type="button" class="primary" title="commit this file to GitHub (Ctrl+S)">commit…</button>
+    </div>
+  </nav>
+
+  <main class="workspace" id="workspace" data-view="split">
+    <aside class="files" id="files" aria-label="files">
+      <div class="fileshead">
+        <div class="repoline">
+          <a id="repoName" class="reponame" target="_blank" rel="noopener"></a>
+          <span id="repoBadge" class="badge" hidden></span>
+        </div>
+        <label class="branch" id="branchBox" hidden>branch
+          <select id="branch" title="branch"></select>
+        </label>
+        <div class="filetools" id="fileTools" hidden>
+          <input id="filter" type="search" placeholder="filter files" aria-label="filter files" autocomplete="off">
+          <button id="newFile" type="button" title="create a new Markdown file in this repository">＋ new</button>
+          <button id="refresh" type="button" title="reload the file list from GitHub">↻</button>
+        </div>
+      </div>
+      <div id="tree" class="tree" role="tree"></div>
+      <div id="filesEmpty" class="empty">
+        <h2>No repository open</h2>
+        <p>You are editing the <b>scratchpad</b>, kept in this browser.</p>
+        <p><button id="openRepo2" type="button">open a repository…</button></p>
+        <p class="help">Public repositories open without signing in. To see private ones and to
+          commit, <a href="#" id="signin2">sign in</a> with a GitHub token.</p>
+        <p class="help"><label class="button linklike">open a local file<input type="file" id="localFile" accept=".md,.markdown,.mdx,.txt,text/markdown,text/plain" hidden></label></p>
+      </div>
+    </aside>
+
+    <section class="pane editorpane" aria-label="Markdown">
+      <div class="panehead">
+        <span id="docPath" class="docpath">scratchpad</span>
+        <span id="dirty" class="dirty" title="changed since it was opened or committed" hidden>●</span>
+        <span class="spacer"></span>
+        <a id="viewOnGh" class="minor" target="_blank" rel="noopener" hidden>on GitHub ↗</a>
+      </div>
+      <div id="banner" class="banner" hidden></div>
+      <textarea id="src" spellcheck="true" aria-label="Markdown source" autocomplete="off" autocapitalize="off"></textarea>
+    </section>
+
+    <section class="pane previewpane" aria-label="rendered">
+      <div class="panehead">
+        <span class="lbl">rendered</span>
+        <span id="renderNote" class="minor"></span>
+        <span class="spacer"></span>
+        <label class="minor" title="render here as you type, or ask GitHub to render it (exact, but slower and limited to a few thousand renders an hour)">by
+          <select id="renderer">
+            <option value="local">meditor (live)</option>
+            <option value="github">GitHub (exact)</option>
+          </select>
+        </label>
+        <label class="minor toggle" title="keep the two panels scrolled to the same place"><input type="checkbox" id="syncScroll" checked> sync scroll</label>
+      </div>
+      <div class="previewscroll" id="previewScroll">
+        <article id="preview" class="markdown-body"></article>
+      </div>
+    </section>
+
+    <div class="split" data-split="files" title="drag to resize; double-click to reset"></div>
+    <div class="split" data-split="editor" title="drag to resize; double-click to reset"></div>
+  </main>
+
+  <footer class="statusbar">
+    <span id="status" class="status" role="status"></span>
+    <span class="spacer"></span>
+    <span id="stats" class="stats"></span>
+  </footer>
+</div>
+
+<dialog id="signinDlg" class="dlg">
+  <form method="dialog" id="signinForm">
+    <h2>Sign in to GitHub</h2>
+    <p>meditor is a static page with no server, so it talks to GitHub with a
+      <b>personal access token</b> that you create. It is kept only in this browser and sent
+      only to <code>api.github.com</code>.</p>
+    <ol class="steps">
+      <li>Create a <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">fine-grained token</a>:
+        choose the repositories, and under <i>Repository permissions</i> give
+        <b>Contents: Read and write</b> (add <b>Pull requests: Read and write</b> to open pull requests).</li>
+      <li>Or a <a href="https://github.com/settings/tokens/new?scopes=repo&amp;description=meditor" target="_blank" rel="noopener">classic token</a> with the <code>repo</code> scope
+        (<code>public_repo</code> for public repositories only).</li>
+    </ol>
+    <label class="field">token
+      <input id="tokenInput" type="password" autocomplete="off" spellcheck="false" placeholder="github_pat_… or ghp_…">
+    </label>
+    <label class="toggle"><input type="checkbox" id="rememberToken" checked> remember on this computer</label>
+    <p id="signinError" class="error" hidden></p>
+    <div class="actions">
+      <button type="button" id="signout" class="danger" hidden>sign out</button>
+      <span class="spacer"></span>
+      <button type="button" data-close>cancel</button>
+      <button id="signinGo" class="primary">sign in</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="repoDlg" class="dlg wide">
+  <form method="dialog" id="repoForm">
+    <h2>Open a repository</h2>
+    <label class="field">a GitHub URL or <code>owner/name</code> — a link to a file opens that file
+      <span class="row">
+        <input id="repoUrl" type="text" autocomplete="off" spellcheck="false" placeholder="https://github.com/owner/name/blob/main/README.md">
+        <button id="repoUrlGo" class="primary">open</button>
+      </span>
+    </label>
+    <div id="repoListBox">
+      <label class="field">or one of yours
+        <input id="repoFilter" type="search" autocomplete="off" placeholder="filter">
+      </label>
+      <ul id="repoList" class="repolist"></ul>
+    </div>
+    <p id="repoNote" class="help"></p>
+    <div class="actions">
+      <span class="spacer"></span>
+      <button type="button" data-close>close</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="commitDlg" class="dlg">
+  <form method="dialog" id="commitForm">
+    <h2>Commit <span id="commitPath" class="mono"></span></h2>
+    <label class="field">commit message
+      <input id="commitMsg" type="text" autocomplete="off" required>
+    </label>
+    <label class="field">extended description <span class="help">(optional)</span>
+      <textarea id="commitBody" rows="3"></textarea>
+    </label>
+    <fieldset class="choice">
+      <label><input type="radio" name="target" value="direct" checked> commit directly to <b id="commitBranch" class="mono"></b></label>
+      <label><input type="radio" name="target" value="pr"> commit to a new branch and open a pull request
+        <input id="prBranch" type="text" autocomplete="off" spellcheck="false" class="mono"></label>
+    </fieldset>
+    <p id="commitNote" class="help"></p>
+    <p id="commitError" class="error" hidden></p>
+    <div class="actions">
+      <button type="button" id="showDiff">changes</button>
+      <span class="spacer"></span>
+      <button type="button" data-close>cancel</button>
+      <button id="commitGo" class="primary">commit</button>
+    </div>
+    <pre id="diff" class="diff" hidden></pre>
+  </form>
+</dialog>
+
+<dialog id="newDlg" class="dlg">
+  <form method="dialog" id="newForm">
+    <h2>New file</h2>
+    <label class="field">path in the repository
+      <input id="newPath" type="text" autocomplete="off" spellcheck="false" class="mono" required>
+    </label>
+    <p class="help">Nothing is created on GitHub until you commit it.</p>
+    <p id="newError" class="error" hidden></p>
+    <div class="actions">
+      <span class="spacer"></span>
+      <button type="button" data-close>cancel</button>
+      <button class="primary">create</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toast" class="toast" role="alert" hidden></div>
+<script type="module">
+  import { boot } from './src/ui.js';
+  boot();
+</script>
+</body>
+</html>

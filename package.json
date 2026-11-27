@@ -1,0 +1,21 @@
+{
+  "name": "meditor",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Edit the Markdown files of your GitHub repositories in the browser, side by side with the rendered page.",
+  "license": "MIT",
+  "author": "Ondřej Lengál",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ondrik/meditor.git"
+  },
+  "keywords": ["markdown", "editor", "github", "gfm"],
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "serve": "python3 -m http.server 8000"
+  }
+}
