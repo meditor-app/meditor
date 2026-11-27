@@ -22,6 +22,7 @@ import { tokenizeLine, retokenize, START, rangesByLine, lineHtml } from './mdsyn
 import { proposeChange } from './fork.js';
 import { proposeImagePath, imageMarkdown, referencedPaths, formatSize } from './images.js';
 import { Drafts, newFileText } from './drafts.js';
+import { loadLocation, latest } from './nav.js';
 
 const $ = (id) => document.getElementById(id);
 const IS_MAC = /mac|iphone|ipad/i.test(navigator.userAgentData?.platform || navigator.platform || '');
@@ -153,7 +154,6 @@ async function busy(label, fn) {
   }
 }
 
-const sameRepo = (a, b) => a && b && a.owner.toLowerCase() === b.owner.toLowerCase() && a.name.toLowerCase() === b.name.toLowerCase();
 const draftKey = (loc) => `${K.draft}${loc.owner}/${loc.name}@${loc.ref}:${loc.path}`;
 
 // ---------------------------------------------------------------- account
@@ -316,8 +316,11 @@ function route() {
   return routing;
 }
 
-async function applyLocation(loc) {
-  if (!loc) {
+// a branch list asked for one repository must not land in another (#31)
+const branchRequests = latest();
+
+async function applyLocation(want) {
+  if (!want) {
     if (state.loc) saveDraftNow();
     state.repo = null;
     state.tree = null;
@@ -325,54 +328,39 @@ async function applyLocation(loc) {
     renderTree();
     return;
   }
-  if (!sameRepo(loc, state.repo)) {
-    try {
-      await busy(`opening ${loc.owner}/${loc.name}`, async () => {
-        state.repo = await state.gh.repo(loc.owner, loc.name);
-        state.branches = [];
-        state.tree = null;
-        state.open = new Set();
-      });
-    } catch {
-      state.repo = null;
-      renderTree();
-      if (!state.loc) openScratch();
-      return;
-    }
-    // the branch list is only needed for the selector; do not hold the file up for it
-    state.gh.branches(state.repo.owner, state.repo.name).then((bs) => {
-      state.branches = bs;
-      renderBranches();
-    }).catch(() => {});
-  }
-  const repo = state.repo;
-  if (!loc.ref) {
-    go({ owner: repo.owner, name: repo.name, ref: repo.defaultBranch, path: loc.path }, true);
+  let r;
+  try {
+    r = await loadLocation(state.gh, { repo: state.repo, tree: state.tree, loc: state.loc }, want, busy);
+  } catch {
+    // nothing has changed (busy said why): the address goes back to what is still open. With
+    // nothing open it is kept, so that reloading (signed in, say) tries it again.
+    if (state.repo) history.replaceState(null, '', formatFragment(state.loc || { owner: state.repo.owner, name: state.repo.name, ref: state.tree?.ref }));
+    else if (!state.loc) openScratch();
     return;
   }
-  if (!state.tree || state.tree.ref !== loc.ref) {
-    try {
-      await busy('reading the file list', async () => {
-        const t = await state.gh.tree(repo.owner, repo.name, loc.ref);
-        state.tree = { ...t, ref: loc.ref };
-      });
-    } catch {
-      state.tree = { truncated: false, entries: [], ref: loc.ref };
-    }
+  const { repo, tree, loc } = r;
+  if (!want.ref || !want.path) history.replaceState(null, '', formatFragment(loc));
+  if (r.branches) {
+    const current = branchRequests.begin();
+    state.branches = [];
+    state.open = new Set();
+    r.branches.then((bs) => {
+      if (!bs || !current()) return;
+      state.branches = bs;
+      renderBranches();
+    });
   }
-  renderBranches();
+  state.repo = repo;
+  state.tree = tree;
   if (!loc.path) {
-    const md = state.tree.entries.filter((e) => e.type === 'file' && MARKDOWN_EXT.test(e.path));
-    const readme = md.find((e) => /^readme\.(md|markdown)$/i.test(e.path)) || md.find((e) => !e.path.includes('/')) || md[0];
-    if (readme) {
-      go({ owner: repo.owner, name: repo.name, ref: loc.ref, path: readme.path }, true);
-      return;
-    }
-    renderTree();
+    openScratch();
+    renderBranches();
     status('This branch has no Markdown files. Create one with “＋ new”.', 'warn');
     return;
   }
-  await openFile({ owner: repo.owner, name: repo.name, ref: loc.ref, path: loc.path });
+  if (!r.same) showFile(loc, r.file);
+  else renderTree(); // the text stays, but the file list may be another (a fork's)
+  renderBranches();
 }
 
 function openScratch() {
@@ -386,15 +374,9 @@ function openScratch() {
   draftWarning();
 }
 
-async function openFile(loc) {
-  if (state.loc && draftKey(state.loc) === draftKey(loc)) return;
+/** Shows the file at `loc`, as getFile read it (null: a new file). */
+function showFile(loc, file) {
   if (state.loc) saveDraftNow();
-  let file;
-  try {
-    file = await busy(`opening ${loc.path}`, () => state.gh.getFile(loc.owner, loc.name, loc.path, loc.ref));
-  } catch {
-    return;
-  }
   state.loc = loc;
   state.doc = file ? { base: file.text, sha: file.sha, isNew: false } : { base: '', sha: null, isNew: true };
   clearPending();
@@ -1194,6 +1176,8 @@ function resolveLink(url) {
   const loc = state.loc;
   if (!loc) return url;
   const r = resolveRef(url, loc);
+  // above the repository's root: on github.com, never relative to the editor's page (#31)
+  if (r.kind === 'outside') return r.url;
   if (r.kind !== 'repo') return url;
   if (MARKDOWN_EXT.test(r.path)) return formatFragment({ ...loc, path: r.path });
   const isDir = state.tree?.entries.some((e) => e.type === 'dir' && e.path === r.path) || url.endsWith('/') || r.path === '';
@@ -1540,8 +1524,8 @@ function onTreeClick(e) {
     return;
   }
   if (b.dataset.path) closeDrawer();
-  if (b.dataset.path && state.loc) go({ ...state.loc, path: b.dataset.path });
-  else if (b.dataset.path && state.repo) go({ owner: state.repo.owner, name: state.repo.name, ref: state.tree.ref, path: b.dataset.path });
+  // the file list's repository and branch, which are also the open file's (#31)
+  if (b.dataset.path && state.repo && state.tree) go({ owner: state.repo.owner, name: state.repo.name, ref: state.tree.ref, path: b.dataset.path });
 }
 
 function renderBranches() {
@@ -1951,7 +1935,7 @@ async function propose({ text, title, body, message }) {
   note += r.pull ? ` Opened ${link(r.pull.html_url, `pull request #${r.pull.number}`)} in ${escapeHtml(loc.owner)}/${escapeHtml(loc.name)}.`
     : ` ${link(r.compare, 'Open the pull request on GitHub')}.`;
   // Go on in the fork, on the new branch: its file list, its branches, and commits that go
-  // to the pull request. The text is kept (state.loc is set first, so openFile leaves it).
+  // to the pull request. The text is kept (state.loc is set first, so applyLocation does not read it again).
   const next = { owner: r.fork.owner, name: r.fork.name, ref: branch, path: loc.path };
   state.loc = next;
   drafts.rename(draftKey(next));
@@ -2463,6 +2447,11 @@ export async function boot() {
   initFind();
   $('previewScroll').addEventListener('scroll', () => syncFrom('preview'), { passive: true });
   $('preview').addEventListener('click', onPreviewClick);
+  // an image that loads (or is swapped in) or a <details> that opens moves the blocks below
+  // it; neither event bubbles, so they are caught on the way down (#31)
+  const moved = () => { previewBlocks = null; };
+  $('preview').addEventListener('load', moved, true);
+  $('preview').addEventListener('toggle', moved, true);
   $('renderer').addEventListener('change', (e) => {
     state.renderer = e.target.value;
     savePrefs();
@@ -2479,8 +2468,17 @@ export async function boot() {
   $('newFile').addEventListener('click', openNewDialog);
   $('refresh').addEventListener('click', async () => {
     if (!state.repo) return;
+    const repo = state.repo;
     const ref = state.tree?.ref;
-    state.tree = { ...(await busy('reading the file list', () => state.gh.tree(state.repo.owner, state.repo.name, ref))), ref };
+    let t;
+    try {
+      t = await busy('reading the file list', () => state.gh.tree(repo.owner, repo.name, ref));
+    } catch {
+      return; // busy said why
+    }
+    // the editor may have moved on to another repository or branch meanwhile (#31)
+    if (state.repo !== repo || state.tree?.ref !== ref) return;
+    state.tree = { ...t, ref };
     renderTree();
   });
   $('branch').addEventListener('change', (e) => {
