@@ -121,11 +121,17 @@ test('fenced code is coloured with GitHub\'s classes, unknown languages stay pla
 test('a 5,000-line code block renders quickly', () => {
   const js = Array.from({ length: 5000 }, (_, i) => `  const v${i} = f("s${i}", ${i} * 2.5); // note ${i}`).join('\n');
   renderMarkdown('```js\nlet a = 1;\n```'); // compile the code paths once, as typing does
-  const t = performance.now();
-  const out = renderMarkdown('```js\n' + js + '\n```');
-  const ms = performance.now() - t;
+  // Wall-clock time on a shared CI machine varies a lot (about 50 ms here, 100 ms on
+  // GitHub's runners), so take the best of three and allow plenty: the point is to catch
+  // a slow (say quadratic) highlighter, which would take seconds.
+  let ms = Infinity, out;
+  for (let i = 0; i < 3; i++) {
+    const t = performance.now();
+    out = renderMarkdown('```js\n' + js + '\n```');
+    ms = Math.min(ms, performance.now() - t);
+  }
   assert.equal((out.match(/<span class="pl-c">/g) || []).length, 5000);
-  assert.ok(ms < 100, `took ${ms.toFixed(1)} ms`);
+  assert.ok(ms < 300, `took ${ms.toFixed(1)} ms`);
 });
 
 test('inline math follows GitHub\'s rules for what counts as a delimiter', () => {
