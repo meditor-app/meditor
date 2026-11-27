@@ -82,12 +82,20 @@ const state = {
   loc: null, // { owner, name, ref, path } of the open file, or null for the scratchpad
   doc: { base: '', sha: null, isNew: false },
   renderer: 'local',
-  view: 'split',
+  view: 'split', // what is shown: edit, split or preview
+  wideView: 'split', // the view chosen on wider screens
+  phoneView: 'edit', // and on a phone, which shows one panel at a time
+  filesPref: true, // the file list shown beside the panels on wider screens
   sync: true,
   images: new Map(), // repo image path -> object URL (private repositories)
   pending: new Map(), // pasted images of the open document, not committed yet (see loadPending)
   loading: 0,
 };
+
+// The screen sizes at which the layout changes (app.css asks the same questions): narrow
+// screens show the file list as a drawer, phones one panel at a time.
+const narrow = matchMedia('(max-width: 900px), (max-height: 500px) and (max-width: 960px)');
+const phone = matchMedia('(max-width: 640px)');
 
 // ---------------------------------------------------------------- small helpers
 
@@ -229,7 +237,7 @@ function signOut() {
 function showAccount() {
   const b = $('account');
   if (state.user) {
-    b.innerHTML = `<img src="${escapeHtml(state.user.avatar_url)}&amp;s=40" alt=""> ${escapeHtml(state.user.login)}`;
+    b.innerHTML = `<img src="${escapeHtml(state.user.avatar_url)}&amp;s=40" alt=""> <span class="login">${escapeHtml(state.user.login)}</span>`;
     b.title = 'signed in to GitHub; click to sign out';
   } else {
     b.textContent = 'sign in';
@@ -495,7 +503,7 @@ const COMMANDS = {
 };
 
 function command(name) {
-  if (state.view === 'preview') setView('split');
+  if (state.view === 'preview') setView(phone.matches ? 'edit' : 'split');
   applyEdit(COMMANDS[name](sel()));
 }
 
@@ -882,8 +890,8 @@ let lineTops = null;
 let previewBlocks = null;
 let mirror = null;
 
-function measureLines() {
-  if (lineTops) return lineTops;
+/** Style the hidden copy of the textarea like it; returns the textarea's top padding. */
+function prepareMirror() {
   const ta = src();
   if (!mirror) {
     mirror = document.createElement('div');
@@ -897,6 +905,13 @@ function measureLines() {
   }
   mirror.style.width = `${ta.clientWidth}px`;
   mirror.style.boxSizing = 'border-box';
+  return parseFloat(cs.paddingTop) || 0;
+}
+
+function measureLines() {
+  if (lineTops) return lineTops;
+  const ta = src();
+  const pad = prepareMirror();
   const lines = ta.value.split('\n');
   const frag = document.createDocumentFragment();
   for (const l of lines) {
@@ -905,7 +920,6 @@ function measureLines() {
     frag.append(d);
   }
   mirror.replaceChildren(frag);
-  const pad = parseFloat(cs.paddingTop) || 0;
   lineTops = Array.from(mirror.children, (d) => d.offsetTop + pad);
   lineTops.push(mirror.scrollHeight + pad);
   mirror.replaceChildren();
@@ -1086,6 +1100,7 @@ function onTreeClick(e) {
     renderTree();
     return;
   }
+  if (b.dataset.path) closeDrawer();
   if (b.dataset.path && state.loc) go({ ...state.loc, path: b.dataset.path });
   else if (b.dataset.path && state.repo) go({ owner: state.repo.owner, name: state.repo.name, ref: state.tree.ref, path: b.dataset.path });
 }
@@ -1156,6 +1171,7 @@ function onRecentClick(e) {
   if (!b) return;
   const dlg = b.closest('dialog');
   if (dlg) dlg.close();
+  closeDrawer();
   go(JSON.parse(b.dataset.loc));
 }
 
@@ -1726,7 +1742,12 @@ async function openLocalFile(file) {
 
 // ---------------------------------------------------------------- view, panels, theme
 
+// A phone shows one panel at a time and does not offer "both"; what is chosen there is kept
+// apart from the choice for wider screens, which the same browser may also have.
 function setView(v) {
+  if (!phone.matches) state.wideView = v;
+  else if (v !== 'split') state.phoneView = v;
+  v = phone.matches ? state.phoneView : state.wideView;
   state.view = v;
   $('workspace').dataset.view = v;
   for (const b of document.querySelectorAll('[data-view]')) {
@@ -1738,19 +1759,29 @@ function setView(v) {
   placeSplits();
 }
 
+// On narrow screens the file list is a drawer over the panels: opened for a moment, and not
+// remembered.
 function setFilesVisible(on) {
   $('workspace').classList.toggle('nofiles', !on);
   $('toggleFiles').setAttribute('aria-pressed', String(on));
-  savePrefs();
+  if (!narrow.matches) {
+    state.filesPref = on;
+    savePrefs();
+  }
   lineTops = null;
   previewBlocks = null;
   placeSplits();
 }
 
+function closeDrawer() {
+  if (narrow.matches && !$('workspace').classList.contains('nofiles')) setFilesVisible(false);
+}
+
 function savePrefs() {
   store.set(K.prefs, {
-    view: state.view,
-    files: !$('workspace').classList.contains('nofiles'),
+    view: state.wideView,
+    phoneView: state.phoneView,
+    files: state.filesPref,
     renderer: state.renderer,
     sync: state.sync,
   });
@@ -1830,6 +1861,56 @@ function initSplits() {
   }).observe(ws);
 }
 
+// The on-screen keyboard. Chrome on Android shrinks the page for it (the viewport's
+// interactive-widget), Safari only the part of it that is visible: there the page is fitted
+// to the visual viewport (--vvh and --vvtop in app.css). Either way the caret is kept in
+// sight, and while the keyboard is up, body.keyboard lets the narrow layout drop its masthead.
+function initViewport() {
+  const vv = window.visualViewport;
+  if (!vv) return;
+  const root = document.documentElement.style;
+  let width = 0;
+  let tallest = 0;
+  const fit = () => {
+    if (vv.scale > 1.01) return; // zoomed in with two fingers: leave the layout alone
+    if (innerWidth !== width) { // turned: the keyboard has another height now
+      width = innerWidth;
+      tallest = 0;
+    }
+    tallest = Math.max(tallest, vv.height);
+    if (vv.height < innerHeight - 1) {
+      root.setProperty('--vvh', `${Math.round(vv.height)}px`);
+      root.setProperty('--vvtop', `${Math.round(vv.offsetTop)}px`);
+    } else {
+      root.removeProperty('--vvh');
+      root.removeProperty('--vvtop');
+    }
+    const typing = !!document.activeElement?.matches('input, textarea, select');
+    document.body.classList.toggle('keyboard', typing && vv.height < tallest * 0.75);
+    requestAnimationFrame(keepCaretInView);
+  };
+  vv.addEventListener('resize', fit);
+  vv.addEventListener('scroll', fit);
+  addEventListener('focusout', () => setTimeout(fit, 100));
+  fit();
+}
+
+/** Scroll the editor so that the caret is in sight, if it is not. */
+function keepCaretInView() {
+  const ta = src();
+  if (document.activeElement !== ta) return;
+  const pad = prepareMirror();
+  const mark = document.createElement('span');
+  mark.textContent = '\u200b';
+  mirror.replaceChildren(document.createTextNode(ta.value.slice(0, ta.selectionEnd)), mark);
+  const top = mark.offsetTop + pad;
+  const bottom = top + mark.offsetHeight;
+  mirror.replaceChildren();
+  if (top < ta.scrollTop || bottom > ta.scrollTop + ta.clientHeight) {
+    ta.scrollTop = Math.max(0, top - ta.clientHeight / 3);
+  }
+}
+
 function initTheme() {
   $('theme').addEventListener('click', () => {
     const cur = document.documentElement.dataset.theme
@@ -1875,14 +1956,21 @@ export async function boot() {
   initTheme();
   initInstall();
   initSplits();
+  initViewport();
 
   const prefs = store.get(K.prefs, {});
   state.renderer = prefs.renderer === 'github' ? 'github' : 'local';
   state.sync = prefs.sync !== false;
   $('renderer').value = state.renderer;
   $('syncScroll').checked = state.sync;
-  setView(['edit', 'split', 'preview'].includes(prefs.view) ? prefs.view : 'split');
-  setFilesVisible(prefs.files !== false && innerWidth > 900);
+  state.wideView = ['edit', 'split', 'preview'].includes(prefs.view) ? prefs.view : 'split';
+  state.phoneView = prefs.phoneView === 'preview' ? 'preview' : 'edit';
+  state.filesPref = prefs.files !== false;
+  setView(phone.matches ? state.phoneView : state.wideView);
+  setFilesVisible(state.filesPref && !narrow.matches);
+  // a tablet turned, or a window resized across the breakpoints
+  phone.addEventListener('change', () => setView(phone.matches ? state.phoneView : state.wideView));
+  narrow.addEventListener('change', () => setFilesVisible(state.filesPref && !narrow.matches));
 
   // toolbar
   for (const b of document.querySelectorAll('[data-cmd]')) {
@@ -1891,6 +1979,7 @@ export async function boot() {
   }
   for (const b of document.querySelectorAll('button[data-view]')) b.addEventListener('click', () => setView(b.dataset.view));
   $('toggleFiles').addEventListener('click', () => setFilesVisible($('workspace').classList.contains('nofiles')));
+  $('scrim').addEventListener('click', closeDrawer);
   $('openRepo').addEventListener('click', openRepoDialog);
   $('openRepo2').addEventListener('click', openRepoDialog);
   $('download').addEventListener('click', download);
@@ -2025,6 +2114,7 @@ export async function boot() {
 
   // keyboard
   document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !document.querySelector('dialog[open]')) closeDrawer();
     const mod = e.ctrlKey || e.metaKey;
     if (!mod || e.altKey) return;
     const k = e.key.toLowerCase();

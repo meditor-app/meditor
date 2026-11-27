@@ -2,7 +2,10 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<!-- viewport-fit=cover: the installed app reaches under a phone's notch and rounded corners,
+     and app.css keeps the content inside the safe area. resizes-content: Chrome on Android
+     shrinks the page, not just the visible part of it, when the on-screen keyboard opens. -->
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
 <!-- Content Security Policy (GitHub Pages cannot send it as a header). Scripts and styles
      only from this site, no inline ones; network requests only to this site, GitHub's API and
      the sign-in relay (src/config.js). So even if a hostile document got script past the
@@ -30,10 +33,11 @@
   </header>
 
   <nav class="toolbar" aria-label="document">
-    <div class="group">
+    <div class="group nav">
       <button id="openRepo" type="button" title="open a repository (Ctrl+O)">open…</button>
       <button id="toggleFiles" type="button" title="show / hide the file list" aria-pressed="true">files</button>
     </div>
+    <div class="fmtbar">
     <div class="group fmt" id="fmt">
       <button type="button" data-cmd="bold" title="bold (Ctrl+B)"><b>B</b></button>
       <button type="button" data-cmd="italic" title="italic (Ctrl+I)"><i>I</i></button>
@@ -58,13 +62,14 @@
       <button type="button" data-cmd="table" title="table">table</button>
       <button type="button" data-cmd="rule" title="horizontal rule">—</button>
     </div>
+    </div>
     <span class="spacer"></span>
     <div class="group seg" role="radiogroup" aria-label="view">
       <button type="button" data-view="edit" role="radio" title="Markdown only">source</button>
       <button type="button" data-view="split" role="radio" title="side by side">both</button>
       <button type="button" data-view="preview" role="radio" title="rendered only">rendered</button>
     </div>
-    <div class="group">
+    <div class="group acts">
       <button id="download" type="button" title="download this file">download</button>
       <button id="commit" type="button" class="primary" title="commit this file to GitHub (Ctrl+S)">commit…</button>
     </div>
@@ -134,6 +139,7 @@
       </div>
     </section>
 
+    <div class="scrim" id="scrim"></div>
     <div class="split" data-split="files" title="drag to resize; double-click to reset"></div>
     <div class="split" data-split="editor" title="drag to resize; double-click to reset"></div>
   </main>
@@ -224,8 +230,8 @@
       <textarea id="commitBody" rows="3"></textarea>
     </label>
     <fieldset class="choice">
-      <label><input type="radio" name="target" value="direct" checked> commit directly to <b id="commitBranch" class="mono"></b></label>
-      <label><input type="radio" name="target" value="pr"> commit to a new branch and open a pull request
+      <label><input type="radio" name="target" value="direct" checked> <span>commit directly to <b id="commitBranch" class="mono"></b></span></label>
+      <label><input type="radio" name="target" value="pr"> <span>commit to a new branch and open a pull request</span>
         <input id="prBranch" type="text" autocomplete="off" spellcheck="false" class="mono"></label>
       <label id="forkChoice"><input type="radio" name="target" value="fork">
         <span>fork the repository to <b id="forkUser"></b> and propose this change: a pull request to <b id="forkBase" class="mono"></b> from a new branch of the fork</span>
