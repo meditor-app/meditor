@@ -59,7 +59,7 @@ request.
 
 | you type | you get |
 | --- | --- |
-| \`**bold**\`, \`_italic_\`, \`~~struck~~\` | **bold**, _italic_, ~~struck~~ |
+| \`**bold**\`, \`*italic*\`, \`~~struck~~\` | **bold**, *italic*, ~~struck~~ |
 | \`[a link](https://github.com)\` | [a link](https://github.com) |
 | \`- [ ] a task\` | a box you can tick, here too |
 
@@ -509,7 +509,7 @@ const sel = () => ({ text: src().value, start: src().selectionStart, end: src().
 
 const COMMANDS = {
   bold: (s) => wrap(s, '**', '**', 'bold text'),
-  italic: (s) => wrap(s, '_', '_', 'italic text'),
+  italic: (s) => wrap(s, '*', '*', 'italic text'), // '_' does not work inside a word
   strike: (s) => wrap(s, '~~', '~~', 'struck text'),
   code: (s) => wrap(s, '`', '`', 'code'),
   h1: (s) => heading(s, 1),
