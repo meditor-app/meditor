@@ -5,16 +5,32 @@
 //
 // Plus resolving the links and images inside a document against the file's location.
 
+import { isOwner, isRepoName, isSafePath, isSafeRef } from './github.js';
+
 /** @typedef {{owner: string, name: string, ref?: string, path?: string}} Location */
 
+/**
+ * The location a fragment names, or null. A link (also one inside a document) can carry
+ * any fragment, and its parts end up in API URLs: a path is normalised ('docs/../a.md' is
+ * 'a.md'), and one that climbs out of the repository, or a name or branch that could,
+ * makes the whole location void rather than open something other than what is shown.
+ */
 export function parseFragment(hash) {
   const p = new URLSearchParams(String(hash).replace(/^#/, ''));
   const repo = p.get('repo');
-  if (!repo || !/^[\w.-]+\/[\w.-]+$/.test(repo)) return null;
-  const [owner, name] = repo.split('/');
-  const loc = { owner, name };
-  if (p.get('ref')) loc.ref = p.get('ref');
-  if (p.get('path')) loc.path = p.get('path').replace(/^\/+/, '');
+  const m = repo && repo.match(/^([^/]+)\/([^/]+)$/);
+  if (!m || !isOwner(m[1]) || !isRepoName(m[2])) return null;
+  const loc = { owner: m[1], name: m[2] };
+  const ref = p.get('ref');
+  if (ref) {
+    if (!isSafeRef(ref)) return null;
+    loc.ref = ref;
+  }
+  if (p.get('path')) {
+    const path = joinPath('', p.get('path'));
+    if (path === null) return null;
+    if (path) loc.path = path;
+  }
   return loc;
 }
 
@@ -37,16 +53,19 @@ export function formatFragment(loc) {
 export function parseGitHubUrl(input) {
   const s = String(input).trim();
   let m = s.match(/^([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/);
-  if (m && !s.includes(':')) return { owner: m[1], name: m[2] };
+  if (m && !s.includes(':')) return isOwner(m[1]) && isRepoName(m[2]) ? { owner: m[1], name: m[2] } : null;
   m = s.match(/^(?:https?:\/\/)?(?:www\.)?github\.com\/([\w.-]+)\/([\w.-]+?)(?:\.git)?(?:\/(?:blob|tree|edit)\/([^?#]+))?\/?(?:[?#].*)?$/);
-  if (m) {
-    const out = { owner: m[1], name: m[2] };
-    if (m[3]) out.rest = decodeURIComponent(m[3]);
-    return out;
+  if (!m) m = s.match(/^(?:https?:\/\/)?raw\.githubusercontent\.com\/([\w.-]+)\/([\w.-]+)\/([^?#]+)/);
+  if (!m || !isOwner(m[1]) || !isRepoName(m[2])) return null;
+  const out = { owner: m[1], name: m[2] };
+  if (m[3]) {
+    let rest;
+    try { rest = decodeURIComponent(m[3]).replace(/\/+$/, ''); } catch { return null; }
+    // the branch and the path, so both are safe if every segment is
+    if (rest && !isSafePath(rest)) return null;
+    if (rest) out.rest = rest;
   }
-  m = s.match(/^(?:https?:\/\/)?raw\.githubusercontent\.com\/([\w.-]+)\/([\w.-]+)\/([^?#]+)/);
-  if (m) return { owner: m[1], name: m[2], rest: decodeURIComponent(m[3]) };
-  return null;
+  return out;
 }
 
 /** Splits "branch/with/slashes/path/to/file.md" using the known branch names. */
@@ -63,15 +82,21 @@ export function splitRefPath(rest, branches) {
 export const dirname = (path) => (path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '');
 export const basename = (path) => path.slice(path.lastIndexOf('/') + 1);
 
-/** `rel` (a relative URL path) resolved against the directory `dir`, or null if it leaves the repository. */
+/**
+ * `rel` (a relative URL path) resolved against the directory `dir`, or null if it leaves
+ * the repository. Every path that reaches the API comes through here or parseFragment, so
+ * it also refuses what github.js would: a backslash, or a segment that is '.' or '..' only
+ * once percent-decoded (which a later decoding could turn into a climb).
+ */
 export function joinPath(dir, rel) {
-  const parts = rel.startsWith('/') ? [] : dir.split('/').filter(Boolean);
-  for (const seg of rel.split('/')) {
+  const parts = [];
+  for (const seg of [...(rel.startsWith('/') ? [] : dir.split('/')), ...rel.split('/')]) {
     if (seg === '' || seg === '.') continue;
     if (seg === '..') {
       if (!parts.length) return null;
       parts.pop();
-    } else parts.push(seg);
+    } else if (!isSafePath(seg)) return null;
+    else parts.push(seg);
   }
   return parts.join('/');
 }

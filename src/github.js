@@ -37,7 +37,62 @@ export function decodeBase64(b64) {
   return new TextDecoder().decode(bytes);
 }
 
-const enc = (path) => path.split('/').map(encodeURIComponent).join('/');
+// Names and paths go into API URLs, where fetch resolves '.' and '..' segments: a path
+// like '../../other/repo/contents/x' would read or commit to another repository than the
+// one named. So nothing that could leave /repos/<owner>/<name>/ is ever put in a URL (and
+// the methods that build URLs are async, so that a refusal rejects like any other error).
+
+/** An account: letters, digits, '-' and '_' (managed users' "_shortcode"). */
+export const isOwner = (s) => typeof s === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(s);
+
+/** A repository: the same and '.', but not '.' or '..'. */
+export const isRepoName = (s) => typeof s === 'string' && /^[A-Za-z0-9._-]{1,100}$/.test(s) && s !== '.' && s !== '..';
+
+// A segment as it reads after any number of percent-decodings, so that a later decoding
+// (ours, the browser's or a server's) cannot turn '%2e%2e' into a climb.
+function decoded(seg) {
+  for (let i = 0; i < 8; i++) {
+    let d;
+    try { d = decodeURIComponent(seg); } catch { break; }
+    if (d === seg) break;
+    seg = d;
+  }
+  return seg;
+}
+
+const badSegment = (seg) => {
+  const d = decoded(seg);
+  // URL parsers read a backslash as '/' in http(s) URLs; a decoded '/' would be one more segment
+  return d === '' || d === '.' || d === '..' || /[\\/]/.test(d);
+};
+
+/** A path inside the repository: no empty, '.' or '..' segments, no backslashes. */
+export const isSafePath = (s) => typeof s === 'string' && s !== '' && !s.split('/').some(badSegment);
+
+/** A branch, tag or commit; branch names hold '/', so the same rule as paths. */
+export const isSafeRef = isSafePath;
+
+const refuse = (what, s) => new GitHubError(400, `${JSON.stringify(String(s))} is not a valid ${what}.`);
+
+/** The API's address of a repository, refusing names that are not GitHub's. */
+function repoUrl(owner, name) {
+  if (!isOwner(owner)) throw refuse('owner', owner);
+  if (!isRepoName(name)) throw refuse('repository name', name);
+  return `/repos/${owner}/${name}`;
+}
+
+/** A path (or a branch, in git/ref/heads/<branch>) as URL segments. */
+const enc = (path, what = 'path in the repository') => {
+  if (!isSafePath(path)) throw refuse(what, path);
+  return path.split('/').map(encodeURIComponent).join('/');
+};
+const encBranch = (branch) => enc(branch, 'branch');
+
+/** A ref as one URL component (a query value, or git/trees/<ref>). */
+const encRef = (ref) => {
+  if (!isSafeRef(ref)) throw refuse('branch', ref);
+  return encodeURIComponent(ref);
+};
 
 export class GitHub {
   /**
@@ -122,17 +177,17 @@ export class GitHub {
   }
 
   async repo(owner, name) {
-    return slimRepo(await this.request('GET', `/repos/${owner}/${name}`));
+    return slimRepo(await this.request('GET', repoUrl(owner, name)));
   }
 
   async branches(owner, name) {
-    const list = await this.paged(`/repos/${owner}/${name}/branches?per_page=100`, 5);
+    const list = await this.paged(`${repoUrl(owner, name)}/branches?per_page=100`, 5);
     return list.map((b) => ({ name: b.name, sha: b.commit.sha }));
   }
 
   /** Every path in the branch, files and directories, plus whether GitHub truncated it. */
   async tree(owner, name, ref) {
-    const t = await this.request('GET', `/repos/${owner}/${name}/git/trees/${encodeURIComponent(ref)}?recursive=1`);
+    const t = await this.request('GET', `${repoUrl(owner, name)}/git/trees/${encRef(ref)}?recursive=1`);
     return {
       truncated: !!t.truncated,
       entries: t.tree.filter((e) => e.type === 'blob' || e.type === 'tree')
@@ -144,7 +199,7 @@ export class GitHub {
   async getFile(owner, name, path, ref) {
     let f;
     try {
-      f = await this.request('GET', `/repos/${owner}/${name}/contents/${enc(path)}?ref=${encodeURIComponent(ref)}`);
+      f = await this.request('GET', `${repoUrl(owner, name)}/contents/${enc(path)}?ref=${encRef(ref)}`);
     } catch (e) {
       if (e.status === 404) return null;
       throw e;
@@ -152,15 +207,15 @@ export class GitHub {
     if (Array.isArray(f) || f.type !== 'file') throw new GitHubError(400, `${path} is not a file`);
     // Over 1 MB the contents API leaves `content` empty; the blob API has no such limit.
     if (f.encoding === 'none' || (!f.content && f.size > 0)) {
-      const blob = await this.request('GET', `/repos/${owner}/${name}/git/blobs/${f.sha}`);
+      const blob = await this.request('GET', `${repoUrl(owner, name)}/git/blobs/${f.sha}`);
       return { text: decodeBase64(blob.content), sha: f.sha };
     }
     return { text: decodeBase64(f.content || ''), sha: f.sha };
   }
 
   /** A file's bytes (for images in private repositories, which have no public URL). */
-  getRaw(owner, name, path, ref) {
-    return this.request('GET', `/repos/${owner}/${name}/contents/${enc(path)}?ref=${encodeURIComponent(ref)}`,
+  async getRaw(owner, name, path, ref) {
+    return this.request('GET', `${repoUrl(owner, name)}/contents/${enc(path)}?ref=${encRef(ref)}`,
       { accept: 'application/vnd.github.raw', raw: 'blob' });
   }
 
@@ -174,12 +229,12 @@ export class GitHub {
   async putFile(owner, name, path, { text, message, branch, sha }) {
     const body = { message, content: encodeBase64(text), branch };
     if (sha) body.sha = sha;
-    const r = await this.request('PUT', `/repos/${owner}/${name}/contents/${enc(path)}`, { body });
+    const r = await this.request('PUT', `${repoUrl(owner, name)}/contents/${enc(path)}`, { body });
     return { sha: r.content.sha, commit: { sha: r.commit.sha, html_url: r.commit.html_url } };
   }
 
   async deleteFile(owner, name, path, { message, branch, sha }) {
-    return this.request('DELETE', `/repos/${owner}/${name}/contents/${enc(path)}`, { body: { message, branch, sha } });
+    return this.request('DELETE', `${repoUrl(owner, name)}/contents/${enc(path)}`, { body: { message, branch, sha } });
   }
 
   /**
@@ -206,9 +261,9 @@ export class GitHub {
    *   the new commit, and the blob sha now at each path written
    */
   async commitChanges(owner, name, branch, { message, changes, expectedHead }) {
-    const R = `/repos/${owner}/${name}/git`;
+    const R = `${repoUrl(owner, name)}/git`;
     if (!changes?.length) throw new Error('Nothing to commit.');
-    const ref = await this.request('GET', `${R}/ref/heads/${enc(branch)}`);
+    const ref = await this.request('GET', `${R}/ref/heads/${encBranch(branch)}`);
     const head = ref.object.sha;
     if (expectedHead && head !== expectedHead) throw moved(branch);
     for (const c of changes) {
@@ -238,7 +293,7 @@ export class GitHub {
     const t = await this.request('POST', `${R}/trees`, { body: { base_tree: base.tree.sha, tree } });
     const commit = await this.request('POST', `${R}/commits`, { body: { message, tree: t.sha, parents: [head] } });
     try {
-      await this.request('PATCH', `${R}/refs/heads/${enc(branch)}`, { body: { sha: commit.sha, force: false } });
+      await this.request('PATCH', `${R}/refs/heads/${encBranch(branch)}`, { body: { sha: commit.sha, force: false } });
     } catch (e) {
       // 422 "Update is not a fast forward": the branch moved after we read it
       if (e.status === 422 || e.status === 409) throw moved(branch);
@@ -251,7 +306,7 @@ export class GitHub {
   async blobSha(owner, name, path, ref) {
     let f;
     try {
-      f = await this.request('GET', `/repos/${owner}/${name}/contents/${enc(path)}?ref=${encodeURIComponent(ref)}`);
+      f = await this.request('GET', `${repoUrl(owner, name)}/contents/${enc(path)}?ref=${encRef(ref)}`);
     } catch (e) {
       if (e.status === 404) return null;
       throw e;
@@ -261,14 +316,14 @@ export class GitHub {
 
   /** A new branch starting where `from` (a branch name) is now. */
   async createBranch(owner, name, branch, from) {
-    const ref = await this.request('GET', `/repos/${owner}/${name}/git/ref/heads/${enc(from)}`);
+    const ref = await this.request('GET', `${repoUrl(owner, name)}/git/ref/heads/${encBranch(from)}`);
     await this.createRef(owner, name, branch, ref.object.sha);
   }
 
   /** The commit a branch points at, or null when there is no such branch (yet). */
   async branchSha(owner, name, branch) {
     try {
-      const ref = await this.request('GET', `/repos/${owner}/${name}/git/ref/heads/${enc(branch)}`);
+      const ref = await this.request('GET', `${repoUrl(owner, name)}/git/ref/heads/${encBranch(branch)}`);
       return ref.object.sha;
     } catch (e) {
       // 409: the repository is empty, as a new fork is while GitHub is still copying it
@@ -277,13 +332,15 @@ export class GitHub {
     }
   }
 
-  createRef(owner, name, branch, sha) {
-    return this.request('POST', `/repos/${owner}/${name}/git/refs`, { body: { ref: `refs/heads/${branch}`, sha } });
+  async createRef(owner, name, branch, sha) {
+    // in the body, not the URL, but '../tags/x' would still make a ref outside refs/heads/
+    encBranch(branch);
+    return this.request('POST', `${repoUrl(owner, name)}/git/refs`, { body: { ref: `refs/heads/${branch}`, sha } });
   }
 
   /** Moves a branch to `sha`; only with `force` may that drop commits. */
-  updateRef(owner, name, branch, sha, force = false) {
-    return this.request('PATCH', `/repos/${owner}/${name}/git/refs/heads/${enc(branch)}`, { body: { sha, force } });
+  async updateRef(owner, name, branch, sha, force = false) {
+    return this.request('PATCH', `${repoUrl(owner, name)}/git/refs/heads/${encBranch(branch)}`, { body: { sha, force } });
   }
 
   /**
@@ -291,16 +348,16 @@ export class GitHub {
    * repository afterwards; if the user has forked it before, it hands back that fork.
    */
   async fork(owner, name) {
-    return slimRepo(await this.request('POST', `/repos/${owner}/${name}/forks`, { body: {} }));
+    return slimRepo(await this.request('POST', `${repoUrl(owner, name)}/forks`, { body: {} }));
   }
 
   /** Brings a fork's branch up to date with the same branch of the repository it came from. */
-  mergeUpstream(owner, name, branch) {
-    return this.request('POST', `/repos/${owner}/${name}/merge-upstream`, { body: { branch } });
+  async mergeUpstream(owner, name, branch) {
+    return this.request('POST', `${repoUrl(owner, name)}/merge-upstream`, { body: { branch } });
   }
 
   async createPull(owner, name, { head, base, title, body }) {
-    const pr = await this.request('POST', `/repos/${owner}/${name}/pulls`, { body: { head, base, title, body, draft: false } });
+    const pr = await this.request('POST', `${repoUrl(owner, name)}/pulls`, { body: { head, base, title, body, draft: false } });
     return { number: pr.number, html_url: pr.html_url };
   }
 
