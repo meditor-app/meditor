@@ -8,6 +8,8 @@ In the spirit of [prose.io](https://prose.io), as one static page.
 
 **→ <https://meditor-app.github.io/meditor/>**
 
+![meditor editing its own README: the file list, the Markdown source and the rendered page side by side](docs/screenshot.png)
+
 No installation, no dependencies: the page talks to `api.github.com` directly from your
 browser. The only server-side piece is a tiny relay that completes *Sign in with GitHub*.
 
@@ -115,6 +117,15 @@ Needed once, by whoever deploys meditor. Until it is done the page offers tokens
    npx wrangler deploy                             # prints https://meditor-auth.<you>.workers.dev
    ```
 3. **Point the page at them** in `src/config.js` (client ID, slug, relay URL), and push.
+
+## Problems and ideas
+
+Report bugs and suggest features in the
+[issue tracker](https://github.com/meditor-app/meditor/issues). For a rendering problem,
+include the Markdown that renders wrongly (and how GitHub renders it, if different).
+Security problems (anything that lets a document or another site get at your GitHub
+sign-in) are better reported privately, through
+[a security advisory](https://github.com/meditor-app/meditor/security/advisories/new).
 
 ## Development
 
