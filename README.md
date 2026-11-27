@@ -87,8 +87,7 @@ listed in `ALLOWED_ORIGINS`. This is the same arrangement as prose.io's Gatekeep
 The sign-in tokens live in the browser's local storage, which every page of the same
 *origin* can read. meditor is therefore published from an organization of its own,
 `meditor-app`, whose GitHub Pages origin (`meditor-app.github.io`) hosts nothing else. It
-used to live at `ondrik.github.io/meditor/`, shared with the other pages of that account;
-that address now forwards here.
+used to live at `ondrik.github.io/meditor/`, shared with the other pages of that account.
 
 ### Setting up Sign in with GitHub
 

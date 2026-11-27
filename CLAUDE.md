@@ -35,7 +35,7 @@ after quedit (`~/quedit`), whose palette and panel layout it shares.
 The site is `https://meditor-app.github.io/meditor/`, in the `meditor-app` organization so
 that the origin is meditor's alone: local storage (the sign-in tokens, drafts) is shared by
 every page of an origin (#12). **Never add another GitHub Pages site to `meditor-app`.** The
-old address, `ondrik.github.io/meditor/`, is a forwarding page in `ondrik/meditor`.
+old address, `ondrik.github.io/meditor/`, is gone.
 
 ## Workflow
 
