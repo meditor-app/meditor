@@ -186,7 +186,9 @@
       </span>
     </label>
     <div id="repoListBox">
-      <label class="field">or one of yours
+      <label class="field"><span class="row">or one of yours <span class="spacer"></span>
+          <span id="reposAge" class="help"></span>
+          <button type="button" id="reposRefresh" class="tiny" title="reload the list from GitHub">↻</button></span>
         <input id="repoFilter" type="search" autocomplete="off" placeholder="filter">
       </label>
       <ul id="repoList" class="repolist"></ul>

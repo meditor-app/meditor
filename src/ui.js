@@ -24,6 +24,7 @@ const K = {
   panels: 'meditor:panels',
   prefs: 'meditor:prefs',
   recent: 'meditor:recent',
+  repos: 'meditor:repos',
 };
 const PIXEL = 'data:image/gif;base64,R0lGODlhAQABAAAAACw=';
 
@@ -146,7 +147,9 @@ async function useCredentials() {
   const gh = new GitHub(auth);
   state.user = await gh.user();
   state.gh = gh;
+  // keep the cached repository list: it is checked against the user, and refreshed anyway
   state.repos = null;
+  reposFresh = false;
   showAccount();
 }
 
@@ -156,7 +159,7 @@ async function signInWithToken(token, remember) {
   auth.usePat(token);
   state.gh = new GitHub(auth);
   state.user = user;
-  state.repos = null;
+  forgetRepos();
   showAccount();
 }
 
@@ -186,6 +189,7 @@ async function finishSignIn() {
     try {
       rememberCreds = true;
       await auth.complete(q.get('code'), q.get('state'), pending);
+      forgetRepos();
       await useCredentials();
       const inst = await state.gh.request('GET', '/user/installations?per_page=1').catch(() => null);
       if (inst && inst.total_count === 0) {
@@ -200,7 +204,7 @@ async function finishSignIn() {
     return;
   }
   // setup_action=install|update: meditor can see a different set of repositories now
-  state.repos = null;
+  forgetRepos();
   toast(auth.kind === 'app'
     ? 'meditor can now see the repositories you chose. Open one with “open…”.'
     : 'meditor is installed. Sign in with GitHub to use it.', 8000);
@@ -210,7 +214,7 @@ function signOut() {
   const was = auth.signOut();
   state.gh = new GitHub(null);
   state.user = null;
-  state.repos = null;
+  forgetRepos();
   for (const url of state.images.values()) URL.revokeObjectURL(url);
   state.images.clear();
   showAccount();
@@ -958,6 +962,62 @@ function onRecentClick(e) {
 
 // ---------------------------------------------------------------- repositories
 
+// The list of the user's repositories takes GitHub several requests to produce, so the last
+// one is kept in this browser and shown at once, then refreshed in the background once per
+// visit (or on ↻). It is dropped on signing in or out, and when the app's repositories change.
+
+let reposFresh = false;
+let reposLoading = null;
+
+function forgetRepos() {
+  state.repos = null;
+  reposFresh = false;
+  store.del(K.repos);
+}
+
+function cachedRepos() {
+  const c = store.get(K.repos);
+  if (!c || !state.user || c.login !== state.user.login || c.kind !== auth.kind || !Array.isArray(c.repos)) return null;
+  return c;
+}
+
+/** Fetch the list from GitHub (one fetch at a time) and keep it. */
+function loadRepos() {
+  if (reposLoading) return reposLoading;
+  const login = state.user.login;
+  reposLoading = state.gh.repos().then((repos) => {
+    if (state.user?.login !== login) return;
+    state.repos = repos;
+    reposFresh = true;
+    store.set(K.repos, { login, kind: auth.kind, at: Date.now(), repos });
+  }).finally(() => { reposLoading = null; });
+  return reposLoading;
+}
+
+function showReposAge() {
+  const c = cachedRepos();
+  $('reposAge').textContent = c ? `updated ${ago(c.at, Date.now())}` : '';
+}
+
+async function refreshRepos(quiet) {
+  const btn = $('reposRefresh');
+  btn.disabled = true;
+  if (!quiet || !state.repos) $('repoNote').textContent = 'loading your repositories…';
+  try {
+    await loadRepos();
+    if ($('repoNote').textContent === 'loading your repositories…') $('repoNote').textContent = '';
+  } catch (e) {
+    // with a list on screen already, a failed background refresh is not worth an alarm
+    if (!quiet || !state.repos) $('repoNote').textContent = e.message;
+  } finally {
+    btn.disabled = false;
+  }
+  if ($('repoDlg').open) {
+    renderRepoList();
+    showReposAge();
+  }
+}
+
 async function openRepoDialog() {
   const dlg = $('repoDlg');
   $('repoUrl').value = '';
@@ -969,24 +1029,24 @@ async function openRepoDialog() {
   renderRecent();
   dlg.showModal();
   $('repoUrl').focus();
-  if (state.user && !state.repos) {
-    $('repoNote').textContent = 'loading your repositories…';
-    try {
-      state.repos = await state.gh.repos();
-      $('repoNote').textContent = '';
-    } catch (e) {
-      $('repoNote').textContent = e.message;
-      return;
-    }
-  }
+  if (!state.user) return;
+  if (!state.repos) state.repos = cachedRepos()?.repos ?? null;
   renderRepoList();
+  showReposAge();
+  if (!reposFresh) refreshRepos(true);
 }
+
+// owner/name in alphabetical order, ignoring case
+const byName = (a, b) => a.full.localeCompare(b.full, 'en', { sensitivity: 'base' });
 
 function renderRepoList() {
   const list = $('repoList');
   if (!state.repos) { list.replaceChildren(); return; }
   const f = $('repoFilter').value.trim().toLowerCase();
-  const hits = state.repos.filter((r) => !f || r.full.toLowerCase().includes(f) || r.description.toLowerCase().includes(f)).slice(0, 200);
+  const hits = state.repos
+    .filter((r) => !f || r.full.toLowerCase().includes(f) || r.description.toLowerCase().includes(f))
+    .sort(byName)
+    .slice(0, 200);
   list.replaceChildren(...hits.map((r) => {
     const li = document.createElement('li');
     const b = document.createElement('button');
@@ -1404,6 +1464,7 @@ export async function boot() {
 
   // repositories
   $('repoFilter').addEventListener('input', renderRepoList);
+  $('reposRefresh').addEventListener('click', () => refreshRepos(false));
   for (const ul of document.querySelectorAll('[data-recent]')) ul.addEventListener('click', onRecentClick);
   $('repoList').addEventListener('click', (e) => {
     const b = e.target.closest('button[data-repo]');
