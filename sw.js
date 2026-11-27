@@ -4,7 +4,7 @@
 // relay and images are never cached). Network first, so an update to the site is picked up
 // on the next start whenever online; the copy is only used when the network fails.
 
-const CACHE = 'meditor-v2';
+const CACHE = 'meditor-v3';
 const SHELL = [
   './',
   'manifest.webmanifest',
@@ -12,6 +12,8 @@ const SHELL = [
   'src/main.js',
   'src/ui.js',
   'src/markdown.js',
+  'src/highlight.js',
+  'src/emoji.js',
   'src/github.js',
   'src/auth.js',
   'src/config.js',

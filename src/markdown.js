@@ -4,7 +4,10 @@
 // documentation actually use: ATX and setext headings, paragraphs, emphasis, strikethrough,
 // code spans and blocks, block quotes (including GitHub's `> [!NOTE]` alerts), nested and
 // task lists, tables, links and images (inline, reference, autolinks and bare URLs),
-// footnotes, rules, hard breaks and raw HTML, which goes through `sanitizeHtml`.
+// footnotes, rules, hard breaks and raw HTML, which goes through `sanitizeHtml`. Like
+// github.com it colours code blocks (`highlight.js`) and turns `:emoji:` shortcodes into
+// emoji; math (`$…$`, `$$…$$`, ```` ```math ````) and Mermaid diagrams, which GitHub draws with
+// scripts this page does not load, are shown as their source, set apart.
 //
 // Every top-level block carries `data-line` (its first source line, 0-based), which the
 // page uses to keep the editor and the preview scrolled to the same place, and every task
@@ -13,6 +16,9 @@
 // It is not a full CommonMark implementation: the block structure is found line by line
 // with a few simplifications (lazy continuation lines, list item edge cases), while the
 // inline layer follows the CommonMark delimiter algorithm for emphasis faithfully.
+
+import { highlight } from './highlight.js';
+import { EMOJI } from './emoji.js';
 
 const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' };
 export const escapeHtml = (s) => String(s).replace(/[&<>"]/g, (c) => ESC[c]);
@@ -146,6 +152,7 @@ const RE = {
   tableDelim: /^ {0,3}\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$/,
   refDef: /^ {0,3}\[((?:[^\]\\]|\\.){1,999})\]:[ \t]*(<[^>\n]*>|\S+)(?:[ \t]+("[^"]*"|'[^']*'|\([^)]*\)))?[ \t]*$/,
   footDef: /^ {0,3}\[\^([^\]\s]+)\]:[ \t]?(.*)$/,
+  mathOpen: /^ {0,3}\$\$[ \t]*$/,
 };
 
 const ALERTS = { note: 'Note', tip: 'Tip', important: 'Important', warning: 'Warning', caution: 'Caution' };
@@ -284,8 +291,26 @@ class Renderer {
         const lang = unescapeMd(decodeEntities(m[3].split(/\s+/)[0] || ''));
         const cls = lang ? ` class="language-${escapeHtml(lang)}"` : '';
         const code = body.join('\n');
-        out.push(`<pre${at}${lang ? ` lang="${escapeHtml(lang)}"` : ''}><code${cls}>${escapeHtml(code)}${code ? '\n' : ''}</code></pre>`);
+        if (lang.toLowerCase() === 'math') {
+          out.push(mathBlock(code, at));
+          continue;
+        }
+        const mermaid = lang.toLowerCase() === 'mermaid';
+        const pre = `<pre${mermaid ? '' : at}${lang ? ` lang="${escapeHtml(lang)}"` : ''}><code${cls}>${highlight(code, lang) ?? escapeHtml(code)}${code ? '\n' : ''}</code></pre>`;
+        out.push(mermaid ? mermaidBlock(pre, at) : pre);
         continue;
+      }
+
+      // display math: $$ on a line of its own, the TeX, and a line ending in $$
+      if (RE.mathOpen.test(line)) {
+        let j = i + 1;
+        while (j < lines.length && !RE.blank.test(lines[j]) && !lines[j].trimEnd().endsWith('$$')) j++;
+        if (j < lines.length && !RE.blank.test(lines[j])) {
+          const tex = [...lines.slice(i + 1, j), lines[j].trimEnd().slice(0, -2)].join('\n').trim();
+          out.push(mathBlock(tex, at));
+          i = j + 1;
+          continue;
+        }
       }
 
       // ATX heading
@@ -531,6 +556,40 @@ class Renderer {
         i = end + run.length;
         continue;
       }
+      if (c === '$') {
+        // $`…`$: the code span's content is the TeX
+        if (text[i + 1] === '`') {
+          const run = text.slice(i + 1).match(/^`+/)[0];
+          const end = findCodeEnd(text, i + 1 + run.length, run.length);
+          if (end > i + 1 + run.length && text[end + run.length] === '$') {
+            push('html', mathInline(text.slice(i + 1 + run.length, end)));
+            i = end + run.length + 1;
+            continue;
+          }
+        }
+        const len = text[i + 1] === '$' ? 2 : 1;
+        const end = text[i + len] === '$' ? -1 : findMathEnd(text, i, len);
+        if (end > 0) {
+          push('html', mathInline(text.slice(i + len, end)));
+          i = end + len;
+          continue;
+        }
+        push('text', text.slice(i, i + len));
+        i += len;
+        continue;
+      }
+      if (c === ':') {
+        EMOJI_NAME.lastIndex = i;
+        const m = EMOJI_NAME.exec(text);
+        if (m && Object.hasOwn(EMOJI, m[1])) {
+          push('text', EMOJI[m[1]]);
+          i += m[0].length;
+          continue;
+        }
+        push('text', ':');
+        i++;
+        continue;
+      }
       if (c === '<') {
         const rest = text.slice(i);
         let m = rest.match(/^<([a-zA-Z][a-zA-Z0-9+.-]{1,31}:[^\s<>]*)>/);
@@ -619,7 +678,7 @@ class Renderer {
       }
       // plain run of text
       let j = i + 1;
-      while (j < n && !/[\\`<&[!*_~\nhw]/.test(text[j])) j++;
+      while (j < n && !/[\\`<&[!*_~\nhw$:]/.test(text[j])) j++;
       push('text', escapeHtml(text.slice(i, j)));
       i = j;
     }
@@ -700,6 +759,31 @@ class Renderer {
 }
 
 // ---------------------------------------------------------------- inline helpers
+
+// GitHub typesets math with MathJax and draws Mermaid diagrams with a script of its own; this
+// page loads neither, so it shows their source, set apart (and only GitHub's renderer draws
+// them). The classes are the renderer's own: the sanitiser does not let documents use them.
+const mathBlock = (tex, at) => `<div class="math math-display"${at}>${escapeHtml(tex)}</div>`;
+const mathInline = (tex) => `<span class="math math-inline">${escapeHtml(tex)}</span>`;
+const mermaidBlock = (pre, at) => `<div class="mermaid-source"${at}><p class="mermaid-note">Mermaid diagram — shown by GitHub; <button type="button" class="mermaid-switch" data-renderer="github">switch the renderer to GitHub (exact)</button> to see it</p>${pre}</div>`;
+
+const isAlnum = (ch) => ch !== undefined && /[\p{L}\p{N}]/u.test(ch);
+
+/**
+ * Where inline math opened by the `$` run text[i..i+len) closes, or -1. As on GitHub: the
+ * opener is not preceded by a letter or digit and is followed by a non-space; the closer is
+ * the next run of `$`, which must be as long, preceded by a non-space (not by a backslash)
+ * and not followed by a letter or digit. So "$5 and $10" stays prose, and so does "$a\$b$"
+ * (write $`a\$b`$ for that).
+ */
+function findMathEnd(text, i, len) {
+  if (isAlnum(text[i - 1]) || !text[i + len] || /\s/.test(text[i + len])) return -1;
+  const k = text.indexOf('$', i + len + 1);
+  if (k < 0) return -1;
+  let e = k;
+  while (text[e] === '$') e++;
+  return e - k === len && !/\s/.test(text[k - 1]) && text[k - 1] !== '\\' && !isAlnum(text[e]) ? k : -1;
+}
 
 function isInsideFence(body, k) {
   let open = false;
@@ -818,6 +902,8 @@ function trimAutolink(url) {
     if (u === before) return u;
   }
 }
+
+const EMOJI_NAME = /:([a-z0-9_+-]+):/y;
 
 const unescapeMd = (s) => s.replace(/\\([!-/:-@[-`{-~])/g, '$1');
 const encodeUrl = (s) => s.replace(/[\s<>"`]/g, (c) => encodeURIComponent(c));

@@ -30,7 +30,8 @@ test('code spans and blocks keep their content verbatim', () => {
   assert.equal(md('`a <b> *c*`'), '<p><code>a &lt;b&gt; *c*</code></p>');
   assert.equal(md('`` a ` b ``'), '<p><code>a ` b</code></p>');
   assert.equal(md('```js\nif (a < b) **x**\n```'),
-    '<pre lang="js"><code class="language-js">if (a &lt; b) **x**\n</code></pre>');
+    '<pre lang="js"><code class="language-js"><span class="pl-k">if</span> (a &lt; b) **x**\n</code></pre>');
+  assert.equal(md('```klingon\nif x\n```'), '<pre lang="klingon"><code class="language-klingon">if x\n</code></pre>');
   assert.equal(md('    indented\n    code'), '<pre><code>indented\ncode\n</code></pre>');
   assert.equal(md('~~~\n```\n~~~'), '<pre><code>```\n</code></pre>');
 });
@@ -107,4 +108,66 @@ test('top-level blocks carry their source line', () => {
   const out = renderMarkdown('# a\n\ntext\nmore\n\n- x\n- y\n\n```\ncode\n```');
   assert.deepEqual([...out.matchAll(/<(\w+) data-line="(\d+)"/g)].map((m) => `${m[1]}:${m[2]}`),
     ['h1:0', 'p:2', 'ul:5', 'li:5', 'li:6', 'pre:8']);
+});
+
+test('fenced code is coloured with GitHub\'s classes, unknown languages stay plain', () => {
+  assert.equal(md('```Python\nx = "a" # c\n```'),
+    '<pre lang="Python"><code class="language-Python">x = <span class="pl-s">&quot;a&quot;</span> <span class="pl-c"># c</span>\n</code></pre>');
+  assert.equal(md('```\nconst x = 1\n```'), '<pre><code>const x = 1\n</code></pre>');
+  assert.equal(md('    const x = 1'), '<pre><code>const x = 1\n</code></pre>');
+  assert.equal(md('`const x`'), '<p><code>const x</code></p>');
+});
+
+test('a 5,000-line code block renders quickly', () => {
+  const js = Array.from({ length: 5000 }, (_, i) => `  const v${i} = f("s${i}", ${i} * 2.5); // note ${i}`).join('\n');
+  renderMarkdown('```js\nlet a = 1;\n```'); // compile the code paths once, as typing does
+  const t = performance.now();
+  const out = renderMarkdown('```js\n' + js + '\n```');
+  const ms = performance.now() - t;
+  assert.equal((out.match(/<span class="pl-c">/g) || []).length, 5000);
+  assert.ok(ms < 100, `took ${ms.toFixed(1)} ms`);
+});
+
+test('inline math follows GitHub\'s rules for what counts as a delimiter', () => {
+  const m = (tex) => `<span class="math math-inline">${tex}</span>`;
+  assert.equal(md('Euler: $e^{i\\pi} + 1 = 0$.'), `<p>Euler: ${m('e^{i\\pi} + 1 = 0')}.</p>`);
+  assert.equal(md('$$a$$ and $`b < c`$'), `<p>${m('a')} and ${m('b &lt; c')}</p>`);
+  assert.equal(md('$`a\\$b`$'), `<p>${m('a\\$b')}</p>`);
+  // what stays prose
+  assert.equal(md('It costs $5 and $10.'), '<p>It costs $5 and $10.</p>');
+  assert.equal(md('$ a$ $b $ $c$5 $d$e x$f$'), '<p>$ a$ $b $ $c$5 $d$e x$f$</p>');
+  assert.equal(md('\\$a$ and $b\\$c$'), '<p>$a$ and $b$c$</p>');
+  assert.equal(md('`$a$`'), '<p><code>$a$</code></p>');
+  // the TeX is kept as written: no emphasis, no entities, no emoji
+  assert.equal(md('$a_1 *b* c_2 :tada: &amp;$'), `<p>${m('a_1 *b* c_2 :tada: &amp;amp;')}</p>`);
+  assert.equal(md('*$x$*'), `<p><em>${m('x')}</em></p>`);
+});
+
+test('display math: $$ blocks and math fences, set apart', () => {
+  assert.equal(md('$$\n\\sum_i x_i < 1\n$$'), '<div class="math math-display">\\sum_i x_i &lt; 1</div>');
+  assert.equal(md('```math\na^2 + b^2\n```'), '<div class="math math-display">a^2 + b^2</div>');
+  assert.equal(md('$$\na\nb$$\n\nnext'), '<div class="math math-display">a\nb</div>\n<p>next</p>');
+  assert.equal(md('> $$\n> x\n> $$'), '<blockquote>\n<div class="math math-display">x</div>\n</blockquote>');
+  // unclosed, or broken by a blank line: a paragraph, as on GitHub
+  assert.equal(md('$$\nx\n\ny'), '<p>$$\nx</p>\n<p>y</p>');
+  assert.match(renderMarkdown('$$\nx\n$$\n\ntext'), /^<div class="math math-display" data-line="0">x<\/div>\n<p data-line="4">/);
+});
+
+test('Mermaid diagrams show their source and point to GitHub\'s renderer', () => {
+  const out = renderMarkdown('```mermaid\ngraph TD; A-->B\n```');
+  assert.match(out, /^<div class="mermaid-source" data-line="0"><p class="mermaid-note">Mermaid diagram — shown by GitHub; <button type="button" class="mermaid-switch" data-renderer="github">switch the renderer to GitHub \(exact\)<\/button> to see it<\/p>/);
+  assert.match(out, /<pre lang="mermaid"><code class="language-mermaid">graph TD; A--&gt;B\n<\/code><\/pre><\/div>$/);
+  // documents cannot dress raw HTML up as these
+  assert.equal(md('a <span class="math math-inline mermaid-note">x</span><button data-renderer="github">b</button>'),
+    '<p>a <span>x</span>b</p>');
+});
+
+test('emoji shortcodes become emoji, outside code; unknown ones stay as written', () => {
+  assert.equal(md(':tada: :+1: :warning: :-1: :t-rex:'), '<p>🎉 👍 ⚠️ 👎 🦖</p>');
+  assert.equal(md('done:white_check_mark:!'), '<p>done✅!</p>');
+  assert.equal(md(':nope: :constructor: :toString: :TADA: 10:30:00 ::'), '<p>:nope: :constructor: :toString: :TADA: 10:30:00 ::</p>');
+  assert.equal(md('`:tada:`\n\n    :tada:'), '<p><code>:tada:</code></p>\n<pre><code>:tada:\n</code></pre>');
+  assert.equal(md('[:rocket: go](x.md) https://x.org/:tada:'),
+    '<p><a href="x.md">🚀 go</a> <a href="https://x.org/:tada" rel="nofollow noopener" target="_blank">https://x.org/:tada</a>:</p>');
+  assert.match(md('# :sparkles: New'), /<\/a>✨ New<\/h1>$/);
 });
