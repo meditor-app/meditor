@@ -4,7 +4,8 @@
 // relay and images are never cached). Network first, so an update to the site is picked up
 // on the next start whenever online; the copy is only used when the network fails.
 
-const CACHE = 'meditor-v3';
+// v4: drops copies of other pages that v3 kept as the app shell (#32)
+const CACHE = 'meditor-v4';
 const SHELL = [
   './',
   'manifest.webmanifest',
@@ -44,8 +45,15 @@ self.addEventListener('fetch', (e) => {
   const req = e.request;
   const url = new URL(req.url);
   if (req.method !== 'GET' || url.origin !== self.location.origin) return;
-  // the page itself, whatever its query (?code=… on the way back from signing in)
-  const key = req.mode === 'navigate' ? new Request(new URL('./', self.registration.scope)) : req;
+  let key = req;
+  if (req.mode === 'navigate') {
+    // the page itself, whatever its query (?code=… on the way back from signing in); any other
+    // page of the site (the old /meditor/ address, a file opened directly) is left alone, so
+    // that it never takes the app's place in the cache
+    const root = new URL('./', self.registration.scope);
+    if (url.pathname !== root.pathname && url.pathname !== root.pathname + 'index.html') return;
+    key = new Request(root);
+  }
   e.respondWith(
     fetch(req).then((res) => {
       if (res.ok) {

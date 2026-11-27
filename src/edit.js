@@ -13,14 +13,27 @@ const lineEnd = (text, i) => {
 /** Bold, italic, code, strike…: wrap the selection, or unwrap it if already wrapped. */
 export function wrap({ text, start, end }, before, after = before, placeholder = '') {
   const sel = text.slice(start, end);
-  if (text.slice(start - before.length, start) === before && text.slice(end, end + after.length) === after) {
+  // "*" and "**" share a character: "**word**" is not italic, "***word***" is both
+  const emph = before === after && /^([*_])\1?$/.test(before);
+  const run = (s) => s.match(new RegExp(`^\\${before[0]}*`))[0].length;
+  const has = (left, right) => {
+    const r = Math.min(run(left), run(right));
+    return before.length === 1 ? r % 2 === 1 : r >= 2;
+  };
+  const around = emph
+    ? has([...text.slice(0, start)].reverse().join(''), text.slice(end))
+    : text.slice(start - before.length, start) === before && text.slice(end, end + after.length) === after;
+  const inside = emph
+    ? sel.length >= 2 * before.length && has(sel, [...sel].reverse().join(''))
+    : sel.startsWith(before) && sel.endsWith(after) && sel.length >= before.length + after.length;
+  if (around) {
     return {
       text: text.slice(0, start - before.length) + sel + text.slice(end + after.length),
       start: start - before.length,
       end: end - before.length,
     };
   }
-  if (sel.startsWith(before) && sel.endsWith(after) && sel.length >= before.length + after.length) {
+  if (inside) {
     const inner = sel.slice(before.length, sel.length - after.length);
     return { text: text.slice(0, start) + inner + text.slice(end), start, end: start + inner.length };
   }
@@ -59,50 +72,108 @@ export function mapLines(sel, fn) {
 }
 
 const LIST = /^(\s*)(?:[-+*]|\d+[.)])\s+(?:\[[ xX]\]\s+)?/;
+const QUOTE = /^(?:[ \t]*>[ \t]?)*/;
+const BREAK = /^\s*([-*_])(?:\s*\1){2,}\s*$/;
+
+/** The selected lines, and whether every non-blank one passes `test` (false if all are blank). */
+function selectedLines(sel, test) {
+  const [from, to] = lineRange(sel);
+  const lines = sel.text.slice(from, to).split('\n');
+  const nonBlank = lines.filter((l) => l.trim());
+  return { lines, all: nonBlank.length > 0 && nonBlank.every(test) };
+}
+
+/** Split a line into its blockquote markers and the rest. */
+const splitQuote = (l) => {
+  const q = l.match(QUOTE)[0];
+  return [q, l.slice(q.length)];
+};
+
+/** Apply `fn` to each selected line without its blockquote markers. */
+const mapInQuote = (sel, fn) => mapLines(sel, (l) => {
+  const [q, rest] = splitQuote(l);
+  return q + fn(rest);
+});
+
+/**
+ * Put list markers on the selected lines, keeping each line's blockquote markers and the
+ * nesting: `marker(n)` gives the marker of the n-th item (1-based) at its level, and
+ * children move with their parent's content column when the marker's width changes. A
+ * line indented into the content of an item above it stays that item's continuation.
+ */
+function setListMarkers(sel, lines, marker) {
+  const stack = []; // the items above: their content columns before and after
+  const counts = [];
+  let quote = null;
+  return mapLines(sel, (l) => {
+    const [q, rest] = splitQuote(l);
+    if (!rest.trim() && lines.length > 1) return l;
+    if (q !== quote) { stack.length = 0; counts.length = 0; quote = q; }
+    const m = rest.match(LIST);
+    const ind = m ? m[1].length : rest.match(/^\s*/)[0].length;
+    while (stack.length && ind < stack.at(-1).oldContent) stack.pop();
+    const top = stack.at(-1);
+    const pad = ' '.repeat(top ? top.newContent + ind - top.oldContent : ind);
+    if (!m && top) return q + pad + rest.slice(ind);
+    const depth = stack.length;
+    counts.length = depth + 1;
+    counts[depth] = (counts[depth] ?? 0) + 1;
+    const mk = marker(counts[depth]);
+    // a task box is part of the item's content, not of its marker
+    const width = (s) => s.replace(/\[[ xX]\]\s+$/, '').length;
+    // (a plain line that becomes an item has no continuation lines: the next line is an item too)
+    stack.push({ oldContent: m ? width(m[0]) : Infinity, newContent: pad.length + width(mk) });
+    return q + pad + mk + rest.slice(m ? m[0].length : ind);
+  });
+}
+
+/** A bullet item that is neither a task nor a thematic break. */
+const isBullet = (rest) => {
+  const m = rest.match(/^\s*[-+*]\s+/);
+  return !!m && !BREAK.test(rest) && !/^\[[ xX]\](\s|$)/.test(rest.slice(m[0].length));
+};
+
+/** Toggle a blockquote; quoting several paragraphs keeps them in one quote. */
+function toggleQuote(sel) {
+  const { lines, all } = selectedLines(sel, (l) => /^\s*>/.test(l));
+  const first = lines.findIndex((l) => l.trim());
+  const last = lines.findLastIndex((l) => l.trim());
+  return mapLines(sel, (l, i) => {
+    if (all) return l.replace(/^\s*>[ \t]?/, '');
+    if (!l.trim() && lines.length > 1) return i > first && i < last ? '>' : l;
+    return '> ' + l;
+  });
+}
 
 /** Toggle a prefix ("> ", "- ") on every selected line. */
 export function togglePrefix(sel, prefix) {
-  const [from, to] = lineRange(sel);
-  const lines = sel.text.slice(from, to).split('\n');
-  const all = lines.filter((l) => l.trim()).every((l) => l.startsWith(prefix));
-  return mapLines(sel, (l) => {
-    if (!l.trim() && lines.length > 1) return l;
-    if (all) return l.slice(prefix.length);
-    return prefix + (prefix === '> ' ? l : l.replace(LIST, '$1'));
-  });
+  if (prefix === '> ') return toggleQuote(sel);
+  const { lines, all } = selectedLines(sel, (l) => isBullet(splitQuote(l)[1]));
+  if (all) return mapInQuote(sel, (r) => r.replace(/^(\s*)[-+*]\s+/, '$1'));
+  return setListMarkers(sel, lines, () => prefix);
 }
 
 export function orderedList(sel) {
-  const [from, to] = lineRange(sel);
-  const lines = sel.text.slice(from, to).split('\n');
-  const all = lines.filter((l) => l.trim()).every((l) => /^\s*\d+[.)]\s/.test(l));
-  let n = 0;
-  return mapLines(sel, (l) => {
-    if (!l.trim() && lines.length > 1) return l;
-    if (all) return l.replace(/^(\s*)\d+[.)]\s+/, '$1');
-    n += 1;
-    return `${n}. ${l.replace(LIST, '')}`;
-  });
+  const { lines, all } = selectedLines(sel, (l) => /^\s*\d+[.)]\s/.test(splitQuote(l)[1]));
+  if (all) return mapInQuote(sel, (r) => r.replace(/^(\s*)\d+[.)]\s+/, '$1'));
+  return setListMarkers(sel, lines, (n) => `${n}. `);
 }
 
 export function taskList(sel) {
-  const [from, to] = lineRange(sel);
-  const lines = sel.text.slice(from, to).split('\n');
-  const all = lines.filter((l) => l.trim()).every((l) => /^\s*[-+*]\s+\[[ xX]\]\s/.test(l));
-  return mapLines(sel, (l) => {
-    if (!l.trim() && lines.length > 1) return l;
-    if (all) return l.replace(/^(\s*)[-+*]\s+\[[ xX]\]\s+/, '$1');
-    return `- [ ] ${l.replace(LIST, '')}`;
-  });
+  const { lines, all } = selectedLines(sel, (l) => /^\s*[-+*]\s+\[[ xX]\]\s/.test(splitQuote(l)[1]));
+  if (all) return mapInQuote(sel, (r) => r.replace(/^(\s*)[-+*]\s+\[[ xX]\]\s+/, '$1'));
+  return setListMarkers(sel, lines, () => '- [ ] ');
 }
 
-/** Set (or with the same level, remove) an ATX heading on the cursor's line. */
+/** Set an ATX heading on the selected lines, or remove it if they all have this level. */
 export function heading(sel, level) {
+  const H = /^\s{0,3}(#{1,6})(?:\s+|$)/;
+  const { lines, all } = selectedLines(sel, (l) => l.match(H)?.[1].length === level);
   return mapLines(sel, (l) => {
-    const m = l.match(/^\s{0,3}(#{1,6})\s+/);
+    if (!l.trim() && lines.length > 1) return l;
+    const m = l.match(H);
     const body = m ? l.slice(m[0].length) : l;
-    if (m && m[1].length === level) return body;
-    return `${'#'.repeat(level)} ${body}`;
+    return all ? body : `${'#'.repeat(level)} ${body}`;
   });
 }
 
@@ -129,9 +200,11 @@ export function codeBlock(sel) {
 export function table(sel) {
   const { text, start, end } = sel;
   const pre = start > 0 && text[start - 1] !== '\n' ? '\n\n' : start > 1 && text[start - 2] !== '\n' ? '\n' : '';
+  // a line straight after a table is another row: leave a blank line before any text
+  const post = end < text.length && text[end] !== '\n' ? '\n' : '';
   const t = '| Column | Column |\n| ------ | ------ |\n| cell   | cell   |\n';
   const s = start + pre.length + 2;
-  return { text: text.slice(0, start) + pre + t + text.slice(end), start: s, end: s + 6 };
+  return { text: text.slice(0, start) + pre + t + post + text.slice(end), start: s, end: s + 6 };
 }
 
 export function rule(sel) {
@@ -169,6 +242,7 @@ export function continueList(sel) {
   const line = text.slice(from, start);
   const quote = line.match(/^(\s*>\s?)+/)?.[0] ?? '';
   const rest = line.slice(quote.length);
+  if (BREAK.test(text.slice(from + quote.length, lineEnd(text, start)))) return null; // "* * *"
   const m = rest.match(/^(\s*)([-+*]|(\d+)([.)]))(\s+)(\[[ xX]\]\s+)?/);
   if (!m) {
     if (quote && rest.trim()) return insert(sel, '\n' + quote);
@@ -193,14 +267,24 @@ export function toggleTask(text, line) {
   const lines = text.split('\n');
   const l = lines[line];
   if (l === undefined) return text;
-  const m = l.match(/^(\s*(?:>\s?)*\s*(?:[-+*]|\d+[.)])\s+)\[([ xX])\]/);
+  // list and quote markers in any mix: "> - [ ]", "- > - [ ]"
+  const m = l.match(/^((?:\s*(?:>\s?|(?:[-+*]|\d+[.)])\s+))*?\s*(?:[-+*]|\d+[.)])\s+)\[([ xX])\]/);
   if (!m) return text;
   lines[line] = m[1] + (m[2] === ' ' ? '[x]' : '[ ]') + l.slice(m[0].length);
   return lines.join('\n');
 }
 
-/** Words, as a reader would count them. */
+/** Words, as a reader would count them: without code blocks, front matter and markup. */
 export function countWords(text) {
-  const m = text.replace(/```[\s\S]*?```/g, ' ').match(/[\p{L}\p{N}][\p{L}\p{N}'’_-]*/gu);
+  const prose = text
+    .replace(/\r\n?/g, '\n')
+    .replace(/^---\n[\s\S]*?\n(?:---|\.\.\.)[ \t]*(?:\n|$)/, '') // front matter
+    .replace(/^[ \t]*(`{3,}|~{3,})[^\n]*\n?[\s\S]*?(?:^[ \t]*\1[`~]*[ \t]*$|(?![\s\S]))/gm, ' ') // fences
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/<\/?[A-Za-z][^<>]*>/g, ' ') // HTML tags, autolinks
+    .replace(/\]\([^)\s]*(?:\s+(?:"[^"]*"|'[^']*'))?\)/g, '] ') // link and image targets
+    .replace(/^[ \t]*\[[^\]\n]+\]:[ \t]*\S+.*$/gm, ' ') // link reference definitions
+    .replace(/^((?:[ \t]*>)*[ \t]*(?:[-+*][ \t]+)?)\d+[.)](?=\s|$)/gm, '$1'); // list numbers
+  const m = prose.match(/[\p{L}\p{N}][\p{L}\p{N}'’_-]*/gu);
   return m ? m.length : 0;
 }

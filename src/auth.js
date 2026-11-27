@@ -36,6 +36,25 @@ export function redirectUri(href) {
   return u.origin + u.pathname.replace(/index\.html$/, '');
 }
 
+/**
+ * What a page load's query says about a return from github.com, given the sign-in this tab
+ * started (`pending`, or null). null when the query is not such a return.
+ * An OAuth error is reported only when it answers that sign-in (its `state` matches): anyone
+ * can link to the page with ?error=…&error_description=…, and that text must not appear as
+ * meditor's own message.
+ * @returns {null | {kind: 'ignore'} | {kind: 'error', message: string} | {kind: 'code', code: string, state: string|null} | {kind: 'installed'}}
+ */
+export function signInReturn(search, pending) {
+  const q = new URLSearchParams(search);
+  if (!q.has('code') && !q.has('setup_action') && !q.has('error')) return null;
+  if (q.has('error')) {
+    const ours = !!pending?.state && q.get('state') === pending.state;
+    return ours ? { kind: 'error', message: q.get('error_description') || q.get('error') } : { kind: 'ignore' };
+  }
+  if (q.has('code')) return { kind: 'code', code: q.get('code'), state: q.get('state') };
+  return { kind: 'installed' };
+}
+
 /** GitHub turned the sign-in down for good (a used or revoked refresh token, a bad code). */
 export class AuthError extends Error {}
 
