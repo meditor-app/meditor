@@ -111,9 +111,32 @@
         <span id="dirty" class="dirty" title="changed since it was opened or committed" hidden>●</span>
         <span class="spacer"></span>
         <a id="viewOnGh" class="minor" target="_blank" rel="noopener" hidden>on GitHub ↗</a>
+        <button id="findOpen" type="button" class="minor flat" title="find and replace in the source (Ctrl+F, Ctrl+H)">find</button>
+        <label class="minor toggle" title="colour the Markdown markup in the source"><input type="checkbox" id="highlight" checked> colours</label>
       </div>
       <div id="banner" class="banner" hidden></div>
-      <textarea id="src" spellcheck="true" aria-label="Markdown source" autocomplete="off" autocapitalize="off"></textarea>
+      <div id="findBar" class="findbar" role="search" hidden>
+        <div class="findrow">
+          <input id="findInput" type="text" placeholder="find" aria-label="find" autocomplete="off" spellcheck="false">
+          <span id="findCount" class="findcount" aria-live="polite"></span>
+          <button type="button" class="opt" data-find-opt="caseSensitive" aria-pressed="false" title="match case (Alt+C)">Aa</button>
+          <button type="button" class="opt" data-find-opt="wholeWord" aria-pressed="false" title="whole words only (Alt+W)"><u>ab</u></button>
+          <button type="button" class="opt" data-find-opt="regex" aria-pressed="false" title="regular expression (Alt+R); the replacement may use $1, $&lt;name&gt;, \n">.*</button>
+          <button id="findPrev" type="button" title="previous match (Shift+Enter, Shift+F3)">↑</button>
+          <button id="findNext" type="button" title="next match (Enter, F3)">↓</button>
+          <button id="replaceToggle" type="button" aria-expanded="false" aria-controls="replaceRow" title="replace (Ctrl+H)">replace</button>
+          <button id="findClose" type="button" title="close (Esc)" aria-label="close">×</button>
+        </div>
+        <div id="replaceRow" class="findrow" hidden>
+          <input id="replaceInput" type="text" placeholder="replace with" aria-label="replace with" autocomplete="off" spellcheck="false">
+          <button id="replaceOne" type="button" title="replace this match and go to the next (Enter)">replace</button>
+          <button id="replaceAll" type="button" title="replace every match; Ctrl+Z in the text undoes it (Ctrl+Enter)">all</button>
+        </div>
+      </div>
+      <div id="srcWrap" class="srcwrap">
+        <div id="srcHl" class="srchl" aria-hidden="true" hidden><div id="srcHlText"></div></div>
+        <textarea id="src" spellcheck="true" aria-label="Markdown source" autocomplete="off" autocapitalize="off"></textarea>
+      </div>
     </section>
 
     <section class="pane previewpane" aria-label="rendered">

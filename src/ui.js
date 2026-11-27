@@ -14,6 +14,10 @@ import {
   continueList, toggleTask, countWords,
 } from './edit.js';
 import { lineDiff } from './diff.js';
+import {
+  findAll, matchFrom, matchBefore, replaceOne, replaceAll, escapeRegExp, MAX_MATCHES,
+} from './find.js';
+import { tokenizeLine, START, stateKey, rangesByLine, lineHtml } from './highlight.js';
 
 const $ = (id) => document.getElementById(id);
 const K = {
@@ -494,6 +498,8 @@ let draftTimer;
 let renderTimer;
 function onTextChanged() {
   lineTops = null;
+  if (find.open) searchText(false);
+  drawSource();
   updateDirty();
   updateStats();
   clearTimeout(draftTimer);
@@ -554,6 +560,11 @@ function onKeyDown(e) {
       return;
     }
   }
+  if (e.key === 'Escape' && find.open && !e.isComposing) {
+    e.preventDefault();
+    closeFind();
+    return;
+  }
   if (e.key === 'Tab' && !mod && !e.altKey) {
     e.preventDefault();
     applyEdit(indent(sel(), e.shiftKey));
@@ -568,6 +579,382 @@ function onKeyDown(e) {
       if (ta.selectionEnd === ta.value.length) ta.scrollTop = ta.scrollHeight;
     }
   }
+}
+
+// ---------------------------------------------------------------- highlighting
+//
+// The textarea's own text is transparent (its caret and selection are not); under it lies a
+// copy of the text, one div per line, coloured by highlight.js and laid out exactly alike:
+// same font, padding, wrapping and width, and moved with the textarea's scroll. Find
+// matches are marked in the same copy, so it is also shown, uncoloured and under visible
+// text, while the find bar is open with highlighting off. An edit re-tokenizes only the
+// lines it touched, and those after it whose state it changed (an opened code fence).
+
+const hl = {
+  on: true,
+  mode: '', // 'colour', 'plain' (find matches only) or '' (not shown)
+  lines: [], // the text drawn, by line
+  states: [START], // states[i]: the tokenizer's state before line i
+  tokens: [],
+  marks: [], // per line: the find marks drawn on it, as a string
+  marked: 0, // lines with find marks
+  els: [], // the lines' divs
+};
+
+// The lines' divs are grouped in blocks of CHUNK, so that the browser lays out again only
+// the block an edit touched, not a container of thousands of lines. Blocks are not
+// rebalanced as lines come and go; a full draw evens them out.
+const CHUNK = 64;
+const ZWSP = '\u200b'; // gives an empty line its height
+
+/** Bring the highlighted copy up to date with the text and the find matches. */
+function drawSource() {
+  const want = hl.on ? 'colour' : find.open ? 'plain' : '';
+  const box = $('srcHlText');
+  if (want !== hl.mode) {
+    hl.mode = want;
+    hl.lines = [];
+    $('srcWrap').classList.toggle('coloured', want === 'colour');
+    $('srcHl').hidden = !want;
+    if (!want) {
+      box.replaceChildren();
+      hl.els = [];
+    } else {
+      fitHl();
+      scrollHl();
+    }
+  }
+  // (and no reading of the textarea's layout from here on: that would lay it out again
+  // at every keystroke; its scroll events keep the copy in place)
+  if (!want) return;
+  const lines = src().value.split('\n');
+  const marks = find.open && find.matches.length
+    ? rangesByLine(lines, find.matches, (k) => (k === find.cur ? 'hit cur' : 'hit')) : null;
+  const colour = want === 'colour';
+  const markKey = (i) => marks?.get(i)?.map((m) => m.join(',')).join(';') || '';
+  const draw = (i) => {
+    hl.marks[i] = markKey(i);
+    hl.els[i].innerHTML = lineHtml(lines[i], colour ? hl.tokens[i] : [], marks?.get(i)) || ZWSP;
+  };
+
+  // the lines that changed: [a, newEnd) now, [a, oldEnd) before
+  const old = hl.lines;
+  const n = lines.length;
+  let a = 0;
+  while (a < n && a < old.length && lines[a] === old[a]) a++;
+  let b = 0;
+  while (b < n - a && b < old.length - a && lines[n - 1 - b] === old[old.length - 1 - b]) b++;
+  const newEnd = n - b;
+  const oldEnd = old.length - b;
+  hl.lines = lines;
+
+  // all at once: one innerHTML is much faster than hundreds of lines one by one
+  const drawAll = () => {
+    let st = START;
+    hl.states = [st];
+    hl.tokens = [];
+    hl.marks = [];
+    hl.marked = 0;
+    const html = [];
+    for (let i = 0; i < n; i++) {
+      if (colour) {
+        const r = tokenizeLine(lines[i], st, lines[i + 1]);
+        hl.tokens[i] = r.tokens;
+        st = r.state;
+        hl.states.push(st);
+      }
+      hl.marks[i] = markKey(i);
+      if (hl.marks[i]) hl.marked++;
+      if (i % CHUNK === 0) html.push(i ? '</div><div>' : '<div>');
+      html.push(`<div>${lineHtml(lines[i], colour ? hl.tokens[i] : [], marks?.get(i)) || ZWSP}</div>`);
+    }
+    box.innerHTML = html.join('') + '</div>';
+    hl.els = [...box.querySelectorAll(':scope > div > div')];
+  };
+  const MANY = 300;
+  if (!old.length || newEnd - a > MANY) {
+    // opening a file, a large paste
+    drawAll();
+    return;
+  }
+
+  const fresh = newEnd - a;
+  const blank = () => new Array(fresh).fill(null);
+  hl.states.splice(a + 1, oldEnd - a, ...blank());
+  hl.tokens.splice(a, oldEnd - a, ...blank());
+  hl.marks.splice(a, oldEnd - a, ...blank());
+  const added = Array.from({ length: fresh }, () => document.createElement('div'));
+  const removed = hl.els.splice(a, oldEnd - a, ...added);
+  for (const el of removed) el.remove();
+  if (a > 0) hl.els[a - 1].after(...added);
+  else if (hl.els[fresh]) hl.els[fresh].before(...added);
+  else (box.firstElementChild || box.appendChild(document.createElement('div'))).append(...added);
+
+  if (colour) {
+    // from the line above (a setext heading looks at the next line) until the state
+    // after a line is what it was before the edit; if that is far (a code fence opened
+    // above the rest of the document), everything again
+    let i = Math.max(0, a - 1);
+    let st = hl.states[i];
+    while (i < n) {
+      if (i > newEnd + MANY) {
+        drawAll();
+        return;
+      }
+      const r = tokenizeLine(lines[i], st, lines[i + 1]);
+      hl.tokens[i] = r.tokens;
+      draw(i);
+      const settled = i + 1 >= newEnd && hl.states[i + 1] && stateKey(hl.states[i + 1]) === stateKey(r.state);
+      hl.states[i + 1] = r.state;
+      st = r.state;
+      i++;
+      if (settled) break;
+    }
+  } else {
+    for (let i = a; i < newEnd; i++) draw(i);
+  }
+
+  // find marks that came, went or moved
+  if (marks || hl.marked) {
+    hl.marked = 0;
+    for (let i = 0; i < n; i++) {
+      const k = markKey(i);
+      if (k !== hl.marks[i]) draw(i);
+      if (k) hl.marked++;
+    }
+  }
+}
+
+/** The copy is as wide and high as the textarea's inside (without its scrollbar). */
+function fitHl() {
+  if (!hl.mode) return;
+  const ta = src();
+  const s = $('srcHl').style;
+  s.width = `${ta.clientWidth}px`;
+  s.height = `${ta.clientHeight}px`;
+}
+
+function scrollHl() {
+  if (!hl.mode) return;
+  const ta = src();
+  $('srcHlText').style.transform = `translate(${-ta.scrollLeft}px, ${-ta.scrollTop}px)`;
+}
+
+// ---------------------------------------------------------------- find and replace
+//
+// Ctrl+F (Ctrl+H with replace) in the editor opens a bar above the text. The matches are
+// found by find.js; the current one is selected in the textarea, and all of them are
+// marked in the highlighted copy, which also tells where the current one is drawn.
+
+const find = {
+  open: false,
+  opts: { caseSensitive: false, wholeWord: false, regex: false },
+  matches: [],
+  cur: -1, // index of the current match, or -1 when the selection is on none
+  capped: false,
+  error: '',
+  anchor: 0, // where a changed query looks for its first match from
+};
+
+function openFind(replace) {
+  const ta = src();
+  const input = $('findInput');
+  if (state.view === 'preview') setView('split');
+  // the selected text becomes the query, unless it is the current match already
+  const s = ta.value.slice(ta.selectionStart, ta.selectionEnd);
+  const m = find.open && find.matches[find.cur];
+  const onMatch = m && m.start === ta.selectionStart && m.end === ta.selectionEnd;
+  if (s && !s.includes('\n') && s.length <= 200 && !onMatch) input.value = find.opts.regex ? escapeRegExp(s) : s;
+  find.anchor = ta.selectionStart;
+  if (!find.open) {
+    find.open = true;
+    $('findBar').hidden = false;
+    showReplace(replace);
+    lineTops = null;
+  } else if (replace) showReplace(true);
+  const to = replace && input.value ? $('replaceInput') : input;
+  to.focus();
+  to.select();
+  searchText(true);
+  drawSource();
+  reveal();
+}
+
+function closeFind() {
+  if (!find.open) return;
+  find.open = false;
+  find.matches = [];
+  find.cur = -1;
+  $('findBar').hidden = true;
+  lineTops = null;
+  drawSource();
+  src().focus();
+}
+
+function showReplace(on) {
+  $('replaceRow').hidden = !on;
+  $('replaceToggle').setAttribute('aria-expanded', String(on));
+}
+
+/** Find the matches again; `jump` makes the first one from the anchor current and selects it. */
+function searchText(jump) {
+  const ta = src();
+  const r = findAll(ta.value, $('findInput').value, find.opts);
+  find.matches = r.matches;
+  find.capped = r.capped;
+  find.error = r.error;
+  if (jump) {
+    find.cur = matchFrom(find.matches, find.anchor);
+    if (find.cur >= 0) select();
+  } else {
+    // still on a match if the selection is exactly one
+    const i = matchFrom(find.matches, ta.selectionStart);
+    const m = find.matches[i];
+    find.cur = m && m.start === ta.selectionStart && m.end === ta.selectionEnd ? i : -1;
+  }
+  showCount();
+}
+
+function select() {
+  const m = find.matches[find.cur];
+  src().setSelectionRange(m.start, m.end);
+  updateStats();
+}
+
+function showCount() {
+  const c = $('findCount');
+  const q = $('findInput').value;
+  const n = find.matches.length;
+  const total = find.capped ? `${MAX_MATCHES.toLocaleString()}+` : n.toLocaleString();
+  c.textContent = find.error || !q ? find.error
+    : !n ? 'no matches'
+      : find.cur >= 0 ? `${(find.cur + 1).toLocaleString()} of ${total}` : `${total} found`;
+  c.title = find.error ? `not a valid regular expression: ${find.error}` : '';
+  const bad = !!find.error || (!!q && !n);
+  c.classList.toggle('bad', bad);
+  $('findInput').classList.toggle('bad', bad);
+  for (const id of ['findPrev', 'findNext', 'replaceOne', 'replaceAll']) $(id).disabled = !n;
+}
+
+/** Scroll the textarea so that the current match is in view, if it is not. */
+function reveal() {
+  const m = find.matches[find.cur];
+  if (!m) return;
+  const ta = src();
+  // the highlighted copy is laid out like the textarea, so its mark is where the match is
+  // drawn, wrapping included; an empty match has no mark, but its line's top will do
+  const el = $('srcHlText').querySelector('.cur');
+  let top;
+  let bottom;
+  if (el) {
+    top = el.offsetTop;
+    bottom = top + el.offsetHeight;
+  } else {
+    const tops = measureLines();
+    const line = ta.value.slice(0, m.start).split('\n').length - 1;
+    top = tops[line];
+    bottom = tops[line + 1];
+  }
+  const view = ta.clientHeight;
+  if (top < ta.scrollTop + 4 || bottom > ta.scrollTop + view - 4) ta.scrollTop = Math.max(0, top - view / 3);
+}
+
+/** To the next (1) or previous (-1) match, from the current one or from the selection. */
+function step(dir) {
+  const n = find.matches.length;
+  if (!n) return;
+  const ta = src();
+  const m = find.matches[find.cur];
+  const on = m && m.start === ta.selectionStart && m.end === ta.selectionEnd;
+  find.cur = on ? (find.cur + dir + n) % n
+    : dir > 0 ? matchFrom(find.matches, ta.selectionEnd) : matchBefore(find.matches, ta.selectionStart);
+  find.anchor = find.matches[find.cur].start;
+  select();
+  showCount();
+  drawSource();
+  reveal();
+}
+
+function replaceCurrent() {
+  const ta = src();
+  const m = find.matches[find.cur];
+  if (!m || m.start !== ta.selectionStart || m.end !== ta.selectionEnd) {
+    step(1);
+    return;
+  }
+  const r = replaceOne(ta.value, m, $('findInput').value, $('replaceInput').value, find.opts);
+  if (r) {
+    find.anchor = r.end;
+    applyEdit({ text: r.text, start: r.end, end: r.end });
+  }
+  searchText(true);
+  drawSource();
+  reveal();
+  $('replaceInput').focus();
+}
+
+function replaceEvery() {
+  const ta = src();
+  const r = replaceAll(ta.value, $('findInput').value, $('replaceInput').value, find.opts);
+  if (!r.count) return;
+  // one edit, so one Ctrl+Z undoes it
+  applyEdit({ text: r.text, start: r.first, end: r.first });
+  status(`Replaced ${r.count.toLocaleString()} ${r.count === 1 ? 'match' : 'matches'}.`);
+  $('replaceInput').focus();
+}
+
+function initFind() {
+  const input = $('findInput');
+  input.addEventListener('input', () => {
+    searchText(true);
+    drawSource();
+    reveal();
+  });
+  for (const b of document.querySelectorAll('[data-find-opt]')) {
+    b.addEventListener('click', () => {
+      const o = b.dataset.findOpt;
+      find.opts[o] = !find.opts[o];
+      b.setAttribute('aria-pressed', String(find.opts[o]));
+      searchText(true);
+      drawSource();
+      reveal();
+    });
+  }
+  // the buttons leave the focus where it was (the find field, or the text)
+  for (const b of $('findBar').querySelectorAll('button')) b.addEventListener('mousedown', (e) => e.preventDefault());
+  $('findNext').addEventListener('click', () => step(1));
+  $('findPrev').addEventListener('click', () => step(-1));
+  $('findClose').addEventListener('click', closeFind);
+  $('replaceToggle').addEventListener('click', () => {
+    showReplace($('replaceRow').hidden);
+    if (!$('replaceRow').hidden) $('replaceInput').focus();
+  });
+  $('replaceOne').addEventListener('click', replaceCurrent);
+  $('replaceAll').addEventListener('click', replaceEvery);
+  $('findOpen').addEventListener('click', () => openFind(false));
+  $('findBar').addEventListener('keydown', (e) => {
+    const mod = e.ctrlKey || e.metaKey;
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      closeFind();
+      return;
+    }
+    const opt = e.altKey && !mod && { KeyC: 'caseSensitive', KeyW: 'wholeWord', KeyR: 'regex' }[e.code];
+    if (opt) {
+      e.preventDefault();
+      $('findBar').querySelector(`[data-find-opt="${opt}"]`).click();
+      return;
+    }
+    if (e.key !== 'Enter' || e.isComposing) return;
+    if (e.target === input) {
+      e.preventDefault();
+      step(e.shiftKey ? -1 : 1);
+    } else if (e.target === $('replaceInput')) {
+      e.preventDefault();
+      if (mod) replaceEvery();
+      else replaceCurrent();
+    }
+  });
 }
 
 // ---------------------------------------------------------------- the preview
@@ -1281,6 +1668,7 @@ function savePrefs() {
     files: !$('workspace').classList.contains('nofiles'),
     renderer: state.renderer,
     sync: state.sync,
+    highlight: hl.on,
   });
 }
 
@@ -1409,6 +1797,8 @@ export async function boot() {
   state.sync = prefs.sync !== false;
   $('renderer').value = state.renderer;
   $('syncScroll').checked = state.sync;
+  hl.on = prefs.highlight !== false;
+  $('highlight').checked = hl.on;
   setView(['edit', 'split', 'preview'].includes(prefs.view) ? prefs.view : 'split');
   setFilesVisible(prefs.files !== false && innerWidth > 900);
 
@@ -1434,7 +1824,17 @@ export async function boot() {
   ta.addEventListener('input', onTextChanged);
   ta.addEventListener('keydown', onKeyDown);
   for (const ev of ['keyup', 'click', 'select']) ta.addEventListener(ev, updateStats);
-  ta.addEventListener('scroll', () => syncFrom('editor'), { passive: true });
+  ta.addEventListener('scroll', () => {
+    scrollHl();
+    syncFrom('editor');
+  }, { passive: true });
+  new ResizeObserver(fitHl).observe(ta);
+  $('highlight').addEventListener('change', (e) => {
+    hl.on = e.target.checked;
+    savePrefs();
+    drawSource();
+  });
+  initFind();
   $('previewScroll').addEventListener('scroll', () => syncFrom('preview'), { passive: true });
   $('preview').addEventListener('click', onPreviewClick);
   $('renderer').addEventListener('change', (e) => {
@@ -1539,6 +1939,18 @@ export async function boot() {
   // keyboard
   document.addEventListener('keydown', (e) => {
     const mod = e.ctrlKey || e.metaKey;
+    if (e.key === 'F3' && find.open && !mod && !e.altKey) {
+      e.preventDefault();
+      step(e.shiftKey ? -1 : 1);
+      return;
+    }
+    // find and replace in the editor; elsewhere Ctrl+F stays the browser's own find
+    const inEditor = e.target instanceof Element && e.target.closest('.editorpane');
+    if (mod && inEditor && !e.shiftKey && ((!e.altKey && /^[fh]$/i.test(e.key)) || (e.altKey && e.code === 'KeyF'))) {
+      e.preventDefault();
+      openFind(e.altKey || e.key.toLowerCase() === 'h');
+      return;
+    }
     if (!mod || e.altKey) return;
     const k = e.key.toLowerCase();
     if (k === 's') {
