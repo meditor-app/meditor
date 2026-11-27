@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { renderMarkdown, sanitizeHtml, slugify } from '../src/markdown.js';
+import { toggleTask } from '../src/edit.js';
 
 // Compare without the data-line attributes, which only the page cares about.
 const md = (s, o) => renderMarkdown(s, o).replace(/ data-line="\d+"/g, '').trim();
@@ -176,4 +177,23 @@ test('emoji shortcodes become emoji, outside code; unknown ones stay as written'
   assert.equal(md('[:rocket: go](x.md) https://x.org/:tada:'),
     '<p><a href="x.md">🚀 go</a> <a href="https://x.org/:tada" rel="nofollow noopener" target="_blank">https://x.org/:tada</a>:</p>');
   assert.match(md('# :sparkles: New'), /<\/a>✨ New<\/h1>$/);
+});
+
+test('every task box the renderer emits can be ticked by toggleTask', () => {
+  const docs = [
+    '- [ ] a\n- [x] b',
+    '---\ntitle: x\n---\n- [ ] after front matter',
+    '- a\n  - [ ] nested\n    1. [x] deeper',
+    '- [ ] lazy\ncontinuation\n- [ ] next',
+    '- item\n\n  ```\n  - [ ] not a task\n  ```\n- [ ] task',
+    '> - [ ] in quote\n> > 1) [x] in nested quote',
+    '- > - [ ] in quote in list',
+    '1. > * [x] in quote in numbered item',
+    '- [ ] crlf\r\n- [x] crlf',
+  ];
+  for (const doc of docs) {
+    const lines = [...renderMarkdown(doc).matchAll(/class="task-list-item-checkbox"[^>]*data-line="(\d+)"/g)];
+    assert.ok(lines.length > 0, doc);
+    for (const [, line] of lines) assert.notEqual(toggleTask(doc, +line), doc, `${JSON.stringify(doc)} line ${line}`);
+  }
 });
