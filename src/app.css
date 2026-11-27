@@ -112,6 +112,8 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
 }
 button.primary { background: var(--ink); color: var(--plate); border-color: var(--ink); }
 button.danger:hover:not(:disabled) { border-color: var(--bad); color: var(--bad); }
+button.primary.danger { background: var(--bad); border-color: var(--bad); color: var(--plate); }
+button.primary.danger:hover:not(:disabled) { color: var(--plate); filter: brightness(1.08); }
 .button.linklike { border: none; background: none; padding: 0; min-height: 0; color: var(--link); text-decoration: underline; display: inline; }
 
 input[type="text"], input[type="search"], input[type="password"], dialog textarea {
@@ -127,13 +129,16 @@ a { color: var(--link); }
 .mono { font-family: var(--mono); }
 .spacer { flex: 1 1 auto; }
 
+/* The page itself never scrolls: the panels do. --vvh is the height above an on-screen
+ * keyboard where the browser does not shrink the page for it (Safari; set by ui.js). The
+ * safe-area insets keep the installed app clear of notches and rounded corners. */
 .app {
   display: grid;
   grid-template-rows: auto auto minmax(200px, 1fr) auto;
   height: 100vh;
-  height: 100dvh;
+  height: var(--vvh, 100dvh);
   gap: 8px;
-  padding: 0 12px 8px;
+  padding: env(safe-area-inset-top) max(12px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
 }
 
 /* ---- masthead ------------------------------------------------------------ */
@@ -164,6 +169,7 @@ a { color: var(--link); }
   gap: 8px 14px;
 }
 .toolbar .group { display: flex; align-items: center; gap: 4px; }
+.fmtbar { display: contents; } /* a strip of its own on narrow screens */
 .fmt button { padding: 4px 8px; }
 .fmt code { font: 11px var(--mono); }
 .seg { gap: 0; }
@@ -195,6 +201,7 @@ a { color: var(--link); }
 .split:hover::after, .split.active::after { background: var(--accent); opacity: 0.5; }
 .workspace.nofiles .split[data-split="files"] { display: none; }
 .workspace:not([data-view="split"]) .split[data-split="editor"] { display: none; }
+.scrim { display: none; }
 body.resizing { user-select: none; -webkit-user-select: none; cursor: col-resize; }
 
 .files, .pane {
@@ -238,6 +245,18 @@ body.resizing { user-select: none; -webkit-user-select: none; cursor: col-resize
 .tree .node.current { background: var(--accent-soft); color: var(--ink); font-weight: 600; }
 .tree .node .draft { color: var(--accent); font-size: 10px; }
 .tree .note { color: var(--ink-faint); padding: 6px; font-size: 12px; }
+/* rename / delete, shown beside a file on hover (always on touch screens) */
+.tree .file { display: flex; align-items: center; position: relative; }
+.tree .file > .node { flex: 1 1 auto; min-width: 0; }
+.tree .acts { display: none; flex: 0 0 auto; gap: 1px; position: absolute; right: 2px; top: 50%; transform: translateY(-50%); background: var(--plate); border-radius: 5px; }
+.tree .file:hover .acts, .tree .file:focus-within .acts { display: flex; }
+.tree .acts button { border: none; background: none; min-height: 20px; padding: 0 5px; color: var(--ink-faint); font-size: 12px; }
+.tree .acts button:hover:not(:disabled) { color: var(--ink); }
+.tree .acts button.del:hover:not(:disabled) { color: var(--bad); }
+.tree .acts button:disabled { opacity: 0.45; }
+@media (hover: none) {
+  .tree .acts { display: flex; position: static; transform: none; background: none; }
+}
 
 .files .empty { padding: 12px; overflow: auto; }
 .files .empty h2 { margin: 2px 0 8px; font: 500 15px/1.3 var(--serif); }
@@ -380,12 +399,15 @@ a.minor:hover { color: var(--accent); }
   color: var(--ink);
   padding: 16px 18px;
   width: min(540px, calc(100vw - 24px));
+  max-height: calc(var(--vvh, 100dvh) - 24px);
+  overflow: auto;
+  overscroll-behavior: contain;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
 }
 .dlg.wide { width: min(680px, calc(100vw - 24px)); }
 .dlg::backdrop { background: rgba(11, 22, 32, 0.45); }
 .dlg h2 { margin: 0 0 10px; font: 500 18px/1.3 var(--serif); }
-.dlg p { margin: 0 0 10px; color: var(--ink-soft); }
+.dlg p { margin: 0 0 10px; color: var(--ink-soft); overflow-wrap: anywhere; }
 .dlg form { display: flex; flex-direction: column; gap: 10px; }
 .dlg .field { display: flex; flex-direction: column; gap: 4px; color: var(--ink-soft); font-size: 12px; }
 .dlg .field input, .dlg .field textarea { font-size: 13px; }
@@ -398,6 +420,7 @@ a.minor:hover { color: var(--accent); }
 .dlg .steps li { margin-bottom: 6px; }
 .dlg .actions { display: flex; gap: 6px; align-items: center; margin-top: 4px; }
 .dlg .error { color: var(--bad); margin: 0; }
+.dlg .progress { color: var(--ink-soft); margin: 0; }
 .dlg code { font: 12px var(--mono); }
 .dlg .big { min-height: 36px; padding: 6px 16px; font-size: 14px; }
 .dlg .who { display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: var(--plate); border: 1px solid var(--rule-soft); border-radius: 8px; }
@@ -409,6 +432,8 @@ a.minor:hover { color: var(--accent); }
 .choice { border: 1px solid var(--rule-soft); border-radius: 8px; padding: 8px 10px; margin: 0; display: flex; flex-direction: column; gap: 6px; }
 .choice label { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .choice input[type="text"] { flex: 1 1 160px; font-size: 12px; }
+/* a longer choice: its words beside the radio button, its input on a line of its own */
+.choice label > span { flex: 1 1 calc(100% - 32px); min-width: 0; }
 .repolist { list-style: none; margin: 6px 0 0; padding: 0; max-height: 46vh; overflow: auto; border: 1px solid var(--rule-soft); border-radius: 8px; background: var(--plate); }
 .repolist:empty { display: none; }
 .repolist li button {
@@ -423,11 +448,14 @@ a.minor:hover { color: var(--accent); }
 .diff .add { color: var(--good); display: block; }
 .diff .del { color: var(--bad); display: block; }
 .diff .gap { color: var(--ink-faint); display: block; }
+.diff .file { color: var(--ink-soft); display: block; font-weight: 600; border-bottom: 1px solid var(--rule-soft); margin-bottom: 2px; }
+.commitfiles { list-style: none; margin: -4px 0 0; padding: 0; font-size: 12px; color: var(--good); }
+.commitfiles li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .toast {
   position: fixed;
   left: 50%;
-  bottom: 24px;
+  bottom: calc(24px + env(safe-area-inset-bottom));
   transform: translateX(-50%);
   z-index: 20;
   background: var(--ink);
@@ -513,22 +541,167 @@ a.minor:hover { color: var(--accent); }
 .markdown-body .alert-warning, .markdown-body .markdown-alert-warning { --alert: var(--warning); }
 .markdown-body .alert-caution, .markdown-body .markdown-alert-caution { --alert: var(--caution); }
 
-/* syntax colours in GitHub's own rendering (the "GitHub (exact)" renderer) */
+/* syntax colours: GitHub's classes, from its own rendering ("GitHub (exact)") and from
+   highlight.js ("meditor (live)") alike */
 .markdown-body .pl-c { color: var(--ink-faint); font-style: italic; }
 .markdown-body .pl-k, .markdown-body .pl-smi.pl-k { color: var(--accent); }
 .markdown-body .pl-s, .markdown-body .pl-pds, .markdown-body .pl-sr { color: var(--good); }
 .markdown-body .pl-c1, .markdown-body .pl-v, .markdown-body .pl-en, .markdown-body .pl-e { color: var(--link); }
 .markdown-body .pl-ent { color: var(--good); }
-.markdown-body .pl-smi, .markdown-body .pl-s1 { color: var(--ink); }
+.markdown-body .pl-smi, .markdown-body .pl-s1, .markdown-body .pl-kos { color: var(--ink); }
+.markdown-body .pl-s .pl-smi, .markdown-body .pl-sra, .markdown-body .pl-cce { color: var(--important); }
+.markdown-body .pl-sg { color: var(--ink-faint); }
+.markdown-body .pl-ii, .markdown-body .pl-il, .markdown-body .pl-bu { color: var(--bad); }
+.markdown-body .pl-ii { text-decoration: underline wavy; }
+.markdown-body .pl-mh, .markdown-body .pl-mdr { color: var(--link); font-weight: 600; }
+.markdown-body .pl-mb { font-weight: 600; }
+.markdown-body .pl-mi { font-style: italic; }
+.markdown-body .pl-md { color: var(--bad); background: color-mix(in srgb, var(--bad) 12%, transparent); }
+.markdown-body .pl-mi1 { color: var(--good); background: color-mix(in srgb, var(--good) 12%, transparent); }
+.markdown-body .pl-mc { color: var(--warning); }
+.markdown-body .pl-md .pl-md, .markdown-body .pl-mi1 .pl-mi1 { background: none; }
 
-/* ---- narrow screens ------------------------------------------------------ */
+/* math and Mermaid, which only GitHub's renderer draws: their source, set apart */
+.markdown-body .math { font-family: var(--mono); color: var(--important); }
+.markdown-body .math-inline { font-size: 88%; padding: 0.1em 0.3em; border-radius: 5px; background: color-mix(in srgb, var(--important) 9%, transparent); }
+.markdown-body .math-display {
+  margin: 0 0 16px; padding: 10px 16px; text-align: center; white-space: pre-wrap; font-size: 90%;
+  border-radius: 6px; background: color-mix(in srgb, var(--important) 7%, transparent);
+}
+.markdown-body .mermaid-source { margin: 0 0 16px; border-left: 3px solid var(--rule); }
+.markdown-body .mermaid-source pre { margin: 0; border-radius: 0 6px 6px 0; }
+.markdown-body .mermaid-note { margin: 0; padding: 4px 16px; font-size: 0.85em; color: var(--ink-soft); }
+.markdown-body .mermaid-switch {
+  font: inherit; padding: 0; border: 0; background: none; color: var(--link); cursor: pointer;
+  text-decoration: underline; text-underline-offset: 2px; text-decoration-thickness: 1px;
+}
+.markdown-body .mermaid-switch:hover { color: var(--accent); }
 
-@media (max-width: 900px) {
-  .app { height: auto; min-height: 100vh; grid-template-rows: none; padding: 0 8px 8px; }
-  .workspace, .workspace.nofiles, .workspace[data-view] { grid-template-columns: minmax(0, 1fr) !important; }
-  .files { max-height: 40vh; }
-  .pane { min-height: 70vh; }
-  .split { display: none !important; }
+/* ---- touch screens --------------------------------------------------------
+ *
+ * Fingers need targets of 40 px or so. Text fields get 16 px type: below that, Safari on
+ * iPhone zooms the page into a field when it takes focus, and leaves it zoomed.
+ */
+
+@media (pointer: coarse) {
+  button, select, .button { min-height: 40px; }
+  .fmt button, .seg button, #theme { min-width: 40px; justify-content: center; }
+  .filetools button, .banner button, .dlg button.tiny { min-height: 40px; padding: 2px 10px; }
+  .branch select, .panehead select { min-height: 36px; }
+  .tree .node { min-height: 40px; }
+  .recent .open { padding: 7px 8px; }
+  .recent .forget { opacity: 1; min-width: 40px; justify-content: center; }
+  .repolist li button { padding: 11px 12px; }
+  .toggle input[type="checkbox"], .choice input[type="radio"] { width: 20px; height: 20px; }
+  #src, #srcHlText, input[type="text"], input[type="search"], input[type="password"], select, textarea,
+  .dlg .field input, .dlg .field textarea, .choice input[type="text"], .branch select, .panehead select { font-size: 16px; }
+}
+
+/* ---- narrow screens: phones, tablets upright, phones on their side ----------
+ *
+ * The same panels, fitted to the screen instead of stacked into a long page: the file list
+ * slides over the panels from the left ("files", closing again when a file is picked), the
+ * formatting buttons become a strip of their own that scrolls sideways, and each panel
+ * scrolls on its own. ui.js asks the same questions (narrow, phone) of matchMedia.
+ *
+ * An upright tablet (768–900 px) keeps source and rendered side by side, a column of about
+ * 45 characters each, as on a desktop: seeing the page while typing it is what meditor is
+ * for. "source" and "rendered" give either one the whole width. On a phone there is room
+ * for one panel only, so it shows one at a time, and "both" is not offered.
+ */
+
+@media (max-width: 900px), (max-height: 500px) and (max-width: 960px) {
+  html { overscroll-behavior: none; }
+  .app {
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
+    gap: 6px;
+    padding: env(safe-area-inset-top) max(8px, env(safe-area-inset-right)) max(6px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+    /* Safari moves what is visible down the page to show the caret above the keyboard */
+    translate: 0 var(--vvtop, 0px);
+  }
+  .masthead { flex-wrap: nowrap; gap: 8px; padding-top: 6px; align-items: center; }
+  .wordmark { flex: none; }
+  .masthead button { flex: none; }
+  #account { flex: 0 1 auto; min-width: 0; white-space: nowrap; }
+  #account .login { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  #account img { flex: none; }
   .tagline { display: none; }
+
+  .workspace, .workspace.nofiles { grid-template-columns: minmax(0, var(--editor-fr, 1fr)) minmax(0, var(--preview-fr, 1fr)); gap: 6px; }
+  .workspace[data-view="edit"], .workspace[data-view="preview"],
+  .workspace.nofiles[data-view="edit"], .workspace.nofiles[data-view="preview"] { grid-template-columns: minmax(0, 1fr); }
+  .split[data-split="files"] { display: none; }
+
+  /* the file list, as a drawer */
+  .files, .workspace.nofiles .files {
+    display: flex;
+    position: fixed;
+    z-index: 15;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: min(320px, 85vw);
+    padding-top: env(safe-area-inset-top);
+    padding-left: env(safe-area-inset-left);
+    border-radius: 0 12px 12px 0;
+    border-left: none;
+    box-shadow: 0 0 40px rgba(0, 0, 0, 0.3);
+    transition: transform 0.2s ease, visibility 0.2s;
+  }
+  .workspace.nofiles .files { transform: translateX(-105%); visibility: hidden; box-shadow: none; }
+  .workspace:not(.nofiles) .scrim { display: block; position: fixed; z-index: 14; inset: 0; background: rgba(11, 22, 32, 0.45); }
+
+  .previewscroll, #src, .tree, .files .empty { overscroll-behavior: contain; }
   .markdown-body { padding: 16px 16px 30vh; }
+  #src, #srcHlText { padding: 12px 12px 30vh; } /* both: see "The source" above */
+}
+
+/* The toolbar, where it does not fit on one line (narrow screens, and tablets turned sideways
+ * with their larger buttons): what to do with the file above, how to format it below. */
+@media (max-width: 900px), (max-height: 500px) and (max-width: 960px), (pointer: coarse) and (max-width: 1279px) {
+  .toolbar {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas: "nav . acts" "fmt fmt view";
+    gap: 6px 8px;
+  }
+  .toolbar > .spacer { display: none; }
+  .toolbar .nav { grid-area: nav; }
+  .toolbar .acts { grid-area: acts; justify-self: end; }
+  .toolbar .seg { grid-area: view; }
+  .fmtbar {
+    grid-area: fmt;
+    display: flex;
+    gap: 10px;
+    min-width: 0;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+    /* fade out at the right edge: there is more */
+    padding-right: 20px;
+    mask-image: linear-gradient(to left, transparent, #000 20px);
+  }
+  .fmtbar::-webkit-scrollbar { display: none; }
+  .fmtbar .group { flex: none; }
+}
+
+/* phones on their side: one toolbar row, the formatting strip between the buttons */
+@media (max-height: 500px) and (min-width: 641px) and (max-width: 960px) {
+  .toolbar { grid-template-columns: auto minmax(0, 1fr) auto auto; grid-template-areas: "nav fmt view acts"; }
+}
+
+@media (max-width: 640px) {
+  .seg button[data-view="split"] { display: none; }
+  .ghlink { display: none; } /* meditor's own source: room for the account instead */
+  .previewpane .panehead .toggle { display: none; } /* sync scroll: one panel has nothing to keep in step */
+  .choice label { display: grid; grid-template-columns: auto minmax(0, 1fr); }
+  .choice input[type="text"] { grid-column: 2; }
+  .wordmark { font-size: 20px; }
+}
+
+/* while the on-screen keyboard is up (ui.js), the masthead and the status line give their
+ * room to the text */
+@media (max-width: 900px), (max-height: 500px) and (max-width: 960px) {
+  body.keyboard .masthead, body.keyboard .statusbar { display: none; }
+  body.keyboard .app { grid-template-rows: auto minmax(0, 1fr); }
 }

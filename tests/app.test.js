@@ -21,7 +21,7 @@ test('the manifest is valid and its icons exist', () => {
 
 test('Pages publishes everything the page refers to', () => {
   const wf = read('.github/workflows/pages.yml');
-  for (const f of ['index.html', 'manifest.webmanifest', 'sw.js', 'icons', 'src']) assert.match(wf, new RegExp(`cp -r .*\\b${f.replace('.', '\\.')}\\b`));
+  for (const f of ['index.html', 'manifest.webmanifest', 'sw.js', 'icons', 'src', 'meditor']) assert.match(wf, new RegExp(`cp -r .*\\b${f.replace('.', '\\.')}\\b`));
 });
 
 test('the Content Security Policy allows what the page needs and nothing inline', async () => {
@@ -38,4 +38,19 @@ test('the Content Security Policy allows what the page needs and nothing inline'
   // nothing inline for the policy to block
   assert.doesNotMatch(html, /<script(?![^>]*\bsrc=)[^>]*>/, 'inline <script>');
   assert.doesNotMatch(html, /\son[a-z]+=|\sstyle=|<style/i, 'inline handler or style');
+});
+
+test('whatever lays out the source text is set on its highlighted copy too', () => {
+  // the coloured copy lies under the textarea and must place every character alike (ui.js,
+  // "highlighting"), also where a media query changes the textarea, as on phones
+  const css = read('src/app.css').replace(/\/\*[\s\S]*?\*\//g, '');
+  const layout = /(^|;|\{)\s*(font(-size|-family)?|line-height|padding(-\w+)?|letter-spacing|word-spacing|tab-size|white-space|overflow-wrap|word-break)\s*:/;
+  let checked = 0;
+  for (const [, selectors, body] of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    const list = selectors.split(',').map((s) => s.trim());
+    if (!list.includes('#src') || !layout.test(body)) continue;
+    assert.ok(list.includes('#srcHlText'), `"${list.join(', ')}" lays out #src but not #srcHlText`);
+    checked++;
+  }
+  assert.ok(checked >= 3, `found only ${checked} rules`);
 });

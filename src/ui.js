@@ -2,12 +2,12 @@
 // The only module that touches the DOM.
 
 import { renderMarkdown, sanitizeHtml, escapeHtml, ID_PREFIX } from './markdown.js';
-import { GitHub, MARKDOWN_EXT } from './github.js';
+import { GitHub, MARKDOWN_EXT, bytesToBase64 } from './github.js';
 import { Auth, AuthError } from './auth.js';
 import { GITHUB_APP } from './config.js';
 import {
   parseFragment, formatFragment, parseGitHubUrl, splitRefPath, resolveRef, githubUrl, rawUrl,
-  dirname, basename, joinPath, addRecent, removeRecent, ago,
+  dirname, basename, joinPath, addRecent, removeRecent, renameRecent, ago,
 } from './links.js';
 import {
   wrap, togglePrefix, orderedList, taskList, heading, link, codeBlock, table, rule, indent,
@@ -18,6 +18,8 @@ import {
   findAll, matchFrom, matchBefore, replaceOne, replaceAll, escapeRegExp, MAX_MATCHES,
 } from './find.js';
 import { tokenizeLine, START, stateKey, rangesByLine, lineHtml } from './mdsyntax.js';
+import { proposeChange } from './fork.js';
+import { proposeImagePath, imageMarkdown, referencedPaths, formatSize } from './images.js';
 
 const $ = (id) => document.getElementById(id);
 const K = {
@@ -84,11 +86,20 @@ const state = {
   loc: null, // { owner, name, ref, path } of the open file, or null for the scratchpad
   doc: { base: '', sha: null, isNew: false },
   renderer: 'local',
-  view: 'split',
+  view: 'split', // what is shown: edit, split or preview
+  wideView: 'split', // the view chosen on wider screens
+  phoneView: 'edit', // and on a phone, which shows one panel at a time
+  filesPref: true, // the file list shown beside the panels on wider screens
   sync: true,
   images: new Map(), // repo image path -> object URL (private repositories)
+  pending: new Map(), // pasted images of the open document, not committed yet (see loadPending)
   loading: 0,
 };
+
+// The screen sizes at which the layout changes (app.css asks the same questions): narrow
+// screens show the file list as a drawer, phones one panel at a time.
+const narrow = matchMedia('(max-width: 900px), (max-height: 500px) and (max-width: 960px)');
+const phone = matchMedia('(max-width: 640px)');
 
 // ---------------------------------------------------------------- small helpers
 
@@ -230,13 +241,14 @@ function signOut() {
 function showAccount() {
   const b = $('account');
   if (state.user) {
-    b.innerHTML = `<img src="${escapeHtml(state.user.avatar_url)}&amp;s=40" alt=""> ${escapeHtml(state.user.login)}`;
+    b.innerHTML = `<img src="${escapeHtml(state.user.avatar_url)}&amp;s=40" alt=""> <span class="login">${escapeHtml(state.user.login)}</span>`;
     b.title = 'signed in to GitHub; click to sign out';
   } else {
     b.textContent = 'sign in';
     b.title = 'sign in to GitHub';
   }
   updateCommitButton();
+  renderTree(); // whether files can be renamed or deleted
 }
 
 function openSignin() {
@@ -337,6 +349,7 @@ async function applyLocation(loc) {
 function openScratch() {
   if (state.loc) saveDraftNow();
   state.loc = null;
+  clearPending();
   state.doc = { base: null, sha: null, isNew: false };
   setText(store.get(K.scratch, WELCOME));
   showDoc();
@@ -353,6 +366,7 @@ async function openFile(loc) {
   }
   state.loc = loc;
   state.doc = file ? { base: file.text, sha: file.sha, isNew: false } : { base: '', sha: null, isNew: true };
+  clearPending();
   rememberRecent(loc);
   const draft = store.get(draftKey(loc));
   let banner = null;
@@ -379,6 +393,7 @@ async function openFile(loc) {
   else hideBanner();
   if (state.doc.isNew) status(`${loc.path} is new: it will be created when you commit it.`, 'warn');
   else status('');
+  loadPending(loc, draft?.text);
   $('src').setSelectionRange(0, 0);
   $('src').scrollTop = 0;
   $('previewScroll').scrollTop = 0;
@@ -393,6 +408,8 @@ function when(t) {
 function discardDraft() {
   if (!state.loc) return;
   store.del(draftKey(state.loc));
+  forgetImages(draftKey(state.loc));
+  clearPending();
   setText(state.doc.base, true);
   hideBanner();
   renderTree();
@@ -490,7 +507,7 @@ const COMMANDS = {
 };
 
 function command(name) {
-  if (state.view === 'preview') setView('split');
+  if (state.view === 'preview') setView(phone.matches ? 'edit' : 'split');
   applyEdit(COMMANDS[name](sel()));
 }
 
@@ -545,8 +562,13 @@ function updateCommitButton() {
   b.disabled = !loc;
   b.title = !loc ? 'open a file from a repository to commit it'
     : !state.user ? 'sign in to commit'
-      : 'commit this file to GitHub (Ctrl+S)';
+      : canFork() ? 'you cannot push here: propose this change through a fork (Ctrl+S)'
+        : 'commit this file to GitHub (Ctrl+S)';
 }
+
+/** The user cannot push to the open repository, but can fork it and propose the change. */
+const canFork = () => !!state.user && !!state.repo && !state.repo.canPush
+  && state.user.login.toLowerCase() !== state.repo.owner.toLowerCase();
 
 function onKeyDown(e) {
   const ta = src();
@@ -759,7 +781,7 @@ const find = {
 function openFind(replace) {
   const ta = src();
   const input = $('findInput');
-  if (state.view === 'preview') setView('split');
+  if (state.view === 'preview') setView(phone.matches ? 'edit' : 'split');
   // the selected text becomes the query, unless it is the current match already
   const s = ta.value.slice(ta.selectionStart, ta.selectionEnd);
   const m = find.open && find.matches[find.cur];
@@ -957,6 +979,155 @@ function initFind() {
   });
 }
 
+// ---------------------------------------------------------------- pasted images
+//
+// An image pasted or dropped into the source goes next to the document (see images.js): its
+// link is inserted at once, the preview shows it from an object URL, and it is committed with
+// the document, in the same commit. Until then it is kept with the draft, in IndexedDB (local
+// storage holds strings, and too few of them for images), under the draft's key. Images whose
+// link is gone by the time of the commit are left out, and forgotten.
+
+const IDB = { name: 'meditor', store: 'images' };
+let idb = null;
+
+function openIdb() {
+  if (!idb) {
+    idb = new Promise((resolve, reject) => {
+      const req = indexedDB.open(IDB.name, 1);
+      req.onupgradeneeded = () => req.result.createObjectStore(IDB.store, { keyPath: 'id' }).createIndex('doc', 'doc');
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    idb.catch(() => { idb = null; });
+  }
+  return idb;
+}
+
+/** Runs `fn(store)` in a transaction; resolves with the result of the request `fn` returned, once done. */
+async function idbDo(mode, fn) {
+  const db = await openIdb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB.store, mode);
+    const r = fn(tx.objectStore(IDB.store));
+    tx.oncomplete = () => resolve(r?.result);
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  });
+}
+
+const imageId = (doc, path) => `${doc}\n${path}`;
+const imagesOf = (doc) => idbDo('readonly', (s) => s.index('doc').getAll(doc)).catch(() => []);
+/** Forgets the images kept for the draft `doc` (only those at `paths`, if given). */
+const forgetImages = (doc, paths = null) => idbDo('readwrite', (s) => {
+  const req = s.index('doc').openCursor(IDBKeyRange.only(doc));
+  req.onsuccess = () => {
+    const c = req.result;
+    if (!c) return;
+    if (!paths || paths.includes(c.value.path)) c.delete();
+    c.continue();
+  };
+}).catch(() => {});
+
+/** Lets go of the open document's pending images (they stay in IndexedDB). */
+function clearPending() {
+  for (const p of state.pending.values()) URL.revokeObjectURL(p.url);
+  state.pending = new Map();
+}
+
+const pendingEntry = (blob, rel) => ({ blob, rel, url: URL.createObjectURL(blob) });
+
+/** After opening a file: its images from an earlier visit, less those its text no longer links. */
+async function loadPending(loc, draftText) {
+  const doc = draftKey(loc);
+  const recs = await imagesOf(doc);
+  if (!state.loc || draftKey(state.loc) !== doc || !recs.length) return;
+  const used = new Set([...referencedPaths(src().value, loc.path), ...referencedPaths(draftText || '', loc.path)]);
+  const gone = [];
+  for (const r of recs) {
+    if (!used.has(r.path)) gone.push(r.path);
+    else if (!state.pending.has(r.path)) state.pending.set(r.path, pendingEntry(r.blob, r.rel));
+  }
+  if (gone.length) forgetImages(doc, gone);
+  if (state.pending.size) renderPreview(true);
+}
+
+/** The pending images the text still links to, in the order they were pasted. */
+function imagesToCommit() {
+  if (!state.loc || !state.pending.size) return [];
+  const used = referencedPaths(src().value, state.loc.path);
+  return [...state.pending].filter(([path]) => used.has(path)).map(([path, p]) => ({ path, ...p }));
+}
+
+function onPaste(e) {
+  const files = [...(e.clipboardData?.files || [])].filter((f) => f.type.startsWith('image/'));
+  if (!files.length) return;
+  e.preventDefault();
+  addImages(files);
+}
+
+function onDragOver(e) {
+  if (![...(e.dataTransfer?.types || [])].includes('Files')) return;
+  e.preventDefault(); // or the browser opens the file in place of the editor
+  e.dataTransfer.dropEffect = 'copy';
+}
+
+function onDrop(e) {
+  const all = [...(e.dataTransfer?.files || [])];
+  if (!all.length) return;
+  e.preventDefault();
+  const files = all.filter((f) => f.type.startsWith('image/'));
+  if (files.length) addImages(files);
+  else toast('Only images can be dropped into the text.');
+}
+
+function addImages(files) {
+  const loc = state.loc;
+  if (!loc) {
+    toast('An image goes into a repository with the document that shows it: open a file from a repository first.');
+    return;
+  }
+  if (state.repo && !state.repo.canPush) {
+    toast(canFork()
+      ? 'You cannot push to this repository: “fork and propose” will commit the image with the document in your fork.'
+      : 'You cannot push to this repository, so the image cannot be committed with the document.');
+  }
+  const inTree = new Set((state.tree?.entries || []).map((e) => e.path.toLowerCase()));
+  const taken = (p) => inTree.has(p.toLowerCase()) || [...state.pending.keys()].some((k) => k.toLowerCase() === p.toLowerCase());
+  const doc = draftKey(loc);
+  const rels = [];
+  for (const f of files) {
+    const { path, rel } = proposeImagePath(loc.path, f, taken);
+    const blob = f.slice(0, f.size, f.type); // a Blob: IndexedDB need not keep the File's name
+    state.pending.set(path, pendingEntry(blob, rel));
+    rels.push(rel);
+    idbDo('readwrite', (s) => s.put({ id: imageId(doc, path), doc, path, rel, blob, at: Date.now() }))
+      .catch(() => status('This browser cannot keep the image for later (no IndexedDB): commit it before closing the page.', 'warn'));
+  }
+  const { text, start, end } = sel();
+  const md = imageMarkdown(rels);
+  applyEdit({ text: text.slice(0, start) + md + text.slice(end), start: start + md.length, end: start + md.length });
+  renderPreview(true);
+  status(`${rels.length === 1 ? rels[0] : `${rels.length} images`} will be committed with ${basename(loc.path)}.`);
+}
+
+/** A renamed document's images: re-keyed, and moved with it so that their links still hold. */
+async function movePending(from, to) {
+  const recs = await imagesOf(draftKey(from));
+  if (!recs.length) return;
+  const doc = draftKey(to);
+  const moved = recs.map((r) => {
+    const path = joinPath(dirname(to.path), r.rel);
+    return { ...r, doc, path, id: imageId(doc, path) };
+  });
+  await forgetImages(draftKey(from));
+  await idbDo('readwrite', (s) => { for (const r of moved) s.put(r); }).catch(() => {});
+  if (state.loc && draftKey(state.loc) === doc) {
+    clearPending();
+    for (const r of moved) state.pending.set(r.path, pendingEntry(r.blob, r.rel));
+    renderPreview(true);
+  }
+}
+
 // ---------------------------------------------------------------- the preview
 
 function resolveImage(url) {
@@ -964,6 +1135,7 @@ function resolveImage(url) {
   if (!loc) return { src: url };
   const r = resolveRef(url, loc);
   if (r.kind !== 'repo') return { src: url };
+  if (state.pending.has(r.path)) return { src: state.pending.get(r.path).url };
   if (state.repo && !state.repo.private) return { src: rawUrl(loc, r.path) };
   const key = `${loc.owner}/${loc.name}@${loc.ref}:${r.path}`;
   return { src: state.images.get(key) || PIXEL, path: r.path };
@@ -1074,6 +1246,13 @@ function onPreviewClick(e) {
     $('previewScroll').scrollTop = keep;
     return;
   }
+  // "switch the renderer to GitHub (exact)" under a Mermaid diagram's source
+  const sw = e.target.closest('button.mermaid-switch[data-renderer]');
+  if (sw) {
+    $('renderer').value = sw.dataset.renderer;
+    $('renderer').dispatchEvent(new Event('change'));
+    return;
+  }
   const a = e.target.closest('a[href]');
   if (!a) return;
   const href = a.getAttribute('href');
@@ -1098,8 +1277,8 @@ let lineTops = null;
 let previewBlocks = null;
 let mirror = null;
 
-function measureLines() {
-  if (lineTops) return lineTops;
+/** Style the hidden copy of the textarea like it; returns the textarea's top padding. */
+function prepareMirror() {
   const ta = src();
   if (!mirror) {
     mirror = document.createElement('div');
@@ -1113,6 +1292,13 @@ function measureLines() {
   }
   mirror.style.width = `${ta.clientWidth}px`;
   mirror.style.boxSizing = 'border-box';
+  return parseFloat(cs.paddingTop) || 0;
+}
+
+function measureLines() {
+  if (lineTops) return lineTops;
+  const ta = src();
+  const pad = prepareMirror();
   const lines = ta.value.split('\n');
   const frag = document.createDocumentFragment();
   for (const l of lines) {
@@ -1121,7 +1307,6 @@ function measureLines() {
     frag.append(d);
   }
   mirror.replaceChildren(frag);
-  const pad = parseFloat(cs.paddingTop) || 0;
   lineTops = Array.from(mirror.children, (d) => d.offsetTop + pad);
   lineTops.push(mirror.scrollHeight + pad);
   mirror.replaceChildren();
@@ -1201,6 +1386,7 @@ function renderTree() {
     }
   } catch { /* no storage */ }
   for (const d of drafts) if (!files.includes(d)) files.push(d);
+  const cantChange = !state.user ? 'sign in to rename or delete files' : !repo.canPush ? 'you cannot push to this repository' : '';
 
   const fileNode = (path, label) => {
     const li = document.createElement('li');
@@ -1211,7 +1397,21 @@ function renderTree() {
     b.dataset.path = path;
     b.title = path;
     b.innerHTML = `<span class="ic">▤</span><span class="nm">${escapeHtml(label)}</span>${drafts.has(path) ? '<span class="draft" title="unsaved changes in this browser">●</span>' : ''}`;
-    li.append(b);
+    const acts = document.createElement('span');
+    acts.className = 'acts';
+    for (const [act, text, title, cls] of [['move', '✎', 'rename or move…', ''], ['delete', '✕', 'delete…', 'del']]) {
+      const a = document.createElement('button');
+      a.type = 'button';
+      a.className = cls;
+      a.dataset.act = act;
+      a.dataset.path = path;
+      a.textContent = text;
+      a.disabled = !!cantChange;
+      a.title = cantChange || `${title.replace('…', '')} ${path}…`;
+      a.setAttribute('aria-label', a.title);
+      acts.append(a);
+    }
+    li.append(b, acts);
     return li;
   };
 
@@ -1273,6 +1473,11 @@ function renderTree() {
 }
 
 function onTreeClick(e) {
+  const act = e.target.closest('button[data-act]');
+  if (act) {
+    openFileDialog(act.dataset.act, act.dataset.path);
+    return;
+  }
   const b = e.target.closest('button.node');
   if (!b) return;
   if (b.dataset.dir) {
@@ -1282,6 +1487,7 @@ function onTreeClick(e) {
     renderTree();
     return;
   }
+  if (b.dataset.path) closeDrawer();
   if (b.dataset.path && state.loc) go({ ...state.loc, path: b.dataset.path });
   else if (b.dataset.path && state.repo) go({ owner: state.repo.owner, name: state.repo.name, ref: state.tree.ref, path: b.dataset.path });
 }
@@ -1352,6 +1558,7 @@ function onRecentClick(e) {
   if (!b) return;
   const dlg = b.closest('dialog');
   if (dlg) dlg.close();
+  closeDrawer();
   go(JSON.parse(b.dataset.loc));
 }
 
@@ -1494,20 +1701,39 @@ function openCommitDialog() {
   }
   const repo = state.repo;
   $('commitPath').textContent = loc.path;
+  const imgs = imagesToCommit();
+  $('commitImages').hidden = !imgs.length;
+  $('commitImages').replaceChildren(...imgs.map((i) => {
+    const li = document.createElement('li');
+    li.innerHTML = `<span class="mono">＋ ${escapeHtml(i.path)}</span> <span class="help">${formatSize(i.blob.size)}</span>`;
+    return li;
+  }));
+  $('commitWith').textContent = imgs.length ? ` and ${imgs.length === 1 ? 'an image' : `${imgs.length} images`}` : '';
   $('commitBranch').textContent = loc.ref;
   $('commitMsg').value = `${state.doc.isNew ? 'Create' : 'Update'} ${basename(loc.path)}`;
   $('commitBody').value = '';
   $('commitError').hidden = true;
   $('diff').hidden = true;
+  $('commitProgress').hidden = true;
   const login = state.user.login.toLowerCase().replace(/[^a-z0-9-]/g, '');
-  $('prBranch').value = `${login}/${basename(loc.path).replace(/\.[^.]+$/, '').toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${Date.now().toString(36).slice(-4)}`;
-  const direct = document.querySelector('input[name="target"][value="direct"]');
-  direct.checked = true;
-  const cantPush = !repo.canPush;
-  $('commitGo').disabled = cantPush;
-  $('commitNote').textContent = cantPush
-    ? 'Your token cannot push to this repository. Download the file, or fork the repository on GitHub and open the fork here.'
-    : '';
+  const topic = `${basename(loc.path).replace(/\.[^.]+$/, '').toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${Date.now().toString(36).slice(-4)}`;
+  $('prBranch').value = `${login}/${topic}`;
+  // in the user's own fork the branch needs no name of theirs in front
+  $('forkBranch').value = topic;
+  const radio = (v) => document.querySelector(`input[name="target"][value="${v}"]`);
+  const fork = canFork();
+  radio('direct').closest('label').hidden = !repo.canPush;
+  radio('pr').closest('label').hidden = !repo.canPush;
+  $('forkChoice').hidden = !fork;
+  radio(fork ? 'fork' : 'direct').checked = true;
+  $('forkUser').textContent = state.user.login;
+  $('forkBase').textContent = `${repo.full} @ ${loc.ref}`;
+  $('commitGo').disabled = !repo.canPush && !fork;
+  $('commitGo').textContent = fork ? 'fork and propose' : 'commit';
+  $('commitNote').textContent = repo.canPush ? ''
+    : !fork ? 'You cannot push to this repository. Download the file, or fork the repository on GitHub and open the fork here.'
+      : `You cannot push to ${repo.full}. meditor forks it to your account (or uses the fork you have), commits the file to a new branch there and opens a pull request; you can then keep editing on that branch.`
+        + (auth.kind === 'app' ? ' Signed in with GitHub, meditor needs to be installed on the fork as well; if it is not, it will say how.' : '');
   $('commitDlg').showModal();
   $('commitMsg').select();
 }
@@ -1516,7 +1742,9 @@ function showDiff() {
   const pre = $('diff');
   if (!pre.hidden) { pre.hidden = true; return; }
   const d = lineDiff(state.doc.base, src().value);
-  pre.innerHTML = d.map(({ op, line }) => {
+  const imgs = imagesToCommit().map((i) => `<span class="file">new image ${escapeHtml(i.path)} (${formatSize(i.blob.size)})</span>`);
+  if (imgs.length) imgs.push(`<span class="file">${escapeHtml(state.loc.path)}</span>`);
+  pre.innerHTML = imgs.join('') + d.map(({ op, line }) => {
     if (op === '…') return '<span class="gap">⋯</span>';
     const cls = op === '+' ? 'add' : op === '-' ? 'del' : '';
     return cls ? `<span class="${cls}">${op} ${escapeHtml(line)}</span>` : `  ${escapeHtml(line)}\n`;
@@ -1530,19 +1758,41 @@ async function doCommit() {
   const title = $('commitMsg').value.trim();
   const body = $('commitBody').value.trim();
   const message = body ? `${title}\n\n${body}` : title;
-  const pr = document.querySelector('input[name="target"]:checked').value === 'pr';
+  const target = document.querySelector('input[name="target"]:checked').value;
+  const pr = target === 'pr';
   const err = $('commitError');
   err.hidden = true;
   $('commitGo').disabled = true;
   try {
+    if (target === 'fork') {
+      await propose({ text, title, body, message });
+      return;
+    }
     let branch = loc.ref;
     if (pr) {
       branch = $('prBranch').value.trim();
       if (!branch) throw new Error('Name the new branch.');
       await busy(`creating branch ${branch}`, () => state.gh.createBranch(loc.owner, loc.name, branch, loc.ref));
     }
-    const r = await busy('committing', () => state.gh.putFile(loc.owner, loc.name, loc.path, { text, message, branch, sha: state.doc.sha }));
+    const imgs = imagesToCommit();
+    let r;
+    if (imgs.length) {
+      // the document and its images in one commit; the document must still be as it was
+      // opened (or still not exist), as putFile checks with `sha`
+      const changes = [{ path: loc.path, text, expect: state.doc.isNew ? null : state.doc.sha }];
+      for (const i of imgs) {
+        changes.push({ path: i.path, blobBase64: bytesToBase64(new Uint8Array(await i.blob.arrayBuffer())), expect: null });
+      }
+      const c = await busy('committing', () => state.gh.commitChanges(loc.owner, loc.name, branch, { message, changes }));
+      r = { sha: c.blobs[loc.path], commit: { sha: c.sha, html_url: c.html_url } };
+    } else {
+      r = await busy('committing', () => state.gh.putFile(loc.owner, loc.name, loc.path, { text, message, branch, sha: state.doc.sha }));
+    }
     store.del(draftKey(loc));
+    forgetImages(draftKey(loc));
+    const committed = new Map(imgs.map((i) => [i.path, i]));
+    for (const [path, p] of state.pending) if (!committed.has(path)) URL.revokeObjectURL(p.url);
+    state.pending = new Map();
     const wasNew = state.doc.isNew;
     state.doc = { base: text, sha: r.sha, isNew: false };
     $('commitDlg').close();
@@ -1564,16 +1814,33 @@ async function doCommit() {
       history.pushState(null, '', formatFragment(next));
       state.tree = { ...(await state.gh.tree(loc.owner, loc.name, branch)), ref: branch };
       renderBranches();
-    } else if (wasNew && state.tree) {
-      state.tree.entries.push({ path: loc.path, type: 'file', sha: r.sha });
+    } else if (state.tree) {
+      if (wasNew) state.tree.entries.push({ path: loc.path, type: 'file', sha: r.sha });
+      for (const path of committed.keys()) state.tree.entries.push({ path, type: 'file' });
+    }
+    // the images are in the repository now; a private one's are shown from what we have
+    for (const [path, i] of committed) {
+      const key = `${state.loc.owner}/${state.loc.name}@${state.loc.ref}:${path}`;
+      if (state.repo?.private && !state.images.has(key)) state.images.set(key, i.url);
+      else URL.revokeObjectURL(i.url);
     }
     status('');
     toast(note, 9000);
     showDoc();
   } catch (e) {
+    $('commitProgress').hidden = true;
     err.textContent = e.message;
     err.hidden = false;
-    if (e.status === 409) {
+    // something to do on github.com first (install meditor, fork by hand, …), then retry
+    for (const { url, label } of e.actions || []) {
+      const a = document.createElement('a');
+      a.href = url;
+      a.target = '_blank';
+      a.rel = 'noopener';
+      a.textContent = `${label} ↗`;
+      err.append(' ', a);
+    }
+    if (e.status === 409 && (e.body?.path || loc.path) === loc.path && !e.body?.moved) {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.textContent = 'load the latest version';
@@ -1581,8 +1848,67 @@ async function doCommit() {
       err.append(' ', btn);
     }
   } finally {
-    $('commitGo').disabled = !state.repo?.canPush;
+    $('commitGo').disabled = !state.repo?.canPush && !canFork();
   }
+}
+
+// The branch a "fork and propose" created in the fork before failing later on (say, the
+// file had changed upstream): trying again with the same name takes that branch over.
+let forkBranchMade = null;
+
+/**
+ * Forks the open repository (or finds the user's fork), commits there, and opens a pull
+ * request. Afterwards the editor is on the fork's new branch, as after "commit to a new
+ * branch" it is on that branch: further commits go to it, and so to the pull request.
+ */
+async function propose({ text, title, body, message }) {
+  const loc = state.loc;
+  const branch = $('forkBranch').value.trim();
+  if (!branch) throw new Error('Name the new branch.');
+  const key = `${loc.owner}/${loc.name}@${loc.ref}:${branch}`;
+  const shown = $('commitProgress');
+  const imgs = imagesToCommit();
+  const images = [];
+  for (const i of imgs) images.push({ path: i.path, blobBase64: bytesToBase64(new Uint8Array(await i.blob.arrayBuffer())) });
+  const r = await busy('proposing the change', () => proposeChange(state.gh, {
+    upstream: loc, login: state.user.login, branch, text, message, sha: state.doc.sha, title, body,
+    installUrl: installUrl(), resume: forkBranchMade === key, images,
+  }, {
+    progress: (t) => { shown.textContent = `${t}…`; shown.hidden = false; },
+    created: () => { forkBranchMade = key; },
+  }));
+  forkBranchMade = null;
+  store.del(draftKey(loc));
+  forgetImages(draftKey(loc));
+  // the images are in the fork now: shown from what we have if it is private, else from it
+  const committed = new Map(imgs.map((i) => [i.path, i]));
+  for (const [path, p] of state.pending) if (!committed.has(path)) URL.revokeObjectURL(p.url);
+  state.pending = new Map();
+  for (const [path, i] of committed) {
+    const k = `${r.fork.owner}/${r.fork.name}@${branch}:${path}`;
+    if (r.fork.private && !state.images.has(k)) state.images.set(k, i.url);
+    else URL.revokeObjectURL(i.url);
+  }
+  state.doc = { base: text, sha: r.sha, isNew: false };
+  $('commitDlg').close();
+  hideBanner();
+  const link = (url, label) => `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(label)}</a>`;
+  let note = `Committed ${link(r.commit.html_url, r.commit.sha.slice(0, 7))} to ${escapeHtml(branch)} in your fork ${escapeHtml(r.fork.full)}.`;
+  note += r.pull ? ` Opened ${link(r.pull.html_url, `pull request #${r.pull.number}`)} in ${escapeHtml(loc.owner)}/${escapeHtml(loc.name)}.`
+    : ` ${link(r.compare, 'Open the pull request on GitHub')}.`;
+  // Go on in the fork, on the new branch: its file list, its branches, and commits that go
+  // to the pull request. The text is kept (state.loc is set first, so openFile leaves it).
+  const next = { owner: r.fork.owner, name: r.fork.name, ref: branch, path: loc.path };
+  state.loc = next;
+  rememberRecent(next);
+  go(next);
+  await routing;
+  status('');
+  showDoc();
+  toast(note, 12000);
+  const pull = r.pull;
+  showBanner(`This is your fork ${r.fork.full}, on the branch ${branch}${pull ? ` of pull request #${pull.number}` : ''}: what you commit here goes to ${pull ? 'the pull request' : 'that branch'}.`,
+    [[pull ? `pull request #${pull.number} ↗` : 'open the pull request ↗', () => window.open(pull ? pull.html_url : r.compare, '_blank', 'noopener')]]);
 }
 
 /** The file changed on GitHub: take its new version as the base, keep the text being edited. */
@@ -1597,6 +1923,168 @@ async function reloadKeepingText() {
   $('diff').hidden = true;
   showDiff();
   $('commitNote').textContent = 'The diff now compares your text with the latest version on GitHub; committing replaces it with yours.';
+}
+
+// ---------------------------------------------------------------- rename, move, delete
+//
+// Each is one commit straight to the branch of the file list. A rename is made with the Git
+// Data API (commitChanges), so that the history shows one commit, not a delete and a create.
+// What this browser keeps about the file (its draft, its place in the recent files) follows
+// it. A file that is not on GitHub yet (a new file, or only a draft) is renamed or dropped
+// here only, without a commit.
+
+let fileAction = null; // { act: 'move'|'delete', path, entry }
+
+function openFileDialog(act, path) {
+  const repo = state.repo;
+  if (!repo || !state.tree) return;
+  if (!state.user || !repo.canPush) return;
+  const entry = state.tree.entries.find((e) => e.type === 'file' && e.path === path) || null;
+  fileAction = { act, path, entry };
+  const move = act === 'move';
+  $('fileVerb').textContent = move ? 'Rename or move' : 'Delete';
+  $('fileFrom').textContent = path;
+  $('fileToBox').hidden = !move;
+  $('fileTo').required = move;
+  $('fileTo').value = path;
+  $('fileMsgBox').hidden = !entry;
+  $('fileMsg').required = !!entry;
+  $('fileMsg').value = move ? '' : `Delete ${basename(path)}`;
+  $('fileMsg').dataset.edited = '';
+  $('fileError').hidden = true;
+  const go = $('fileGo');
+  go.textContent = move ? 'rename' : 'delete';
+  go.classList.toggle('danger', !move);
+  go.disabled = false;
+  const draft = store.get(draftKey({ owner: repo.owner, name: repo.name, ref: state.tree.ref, path }));
+  const open = state.loc?.path === path;
+  const unsaved = draft || (open && isDirty());
+  $('fileNote').textContent = !entry
+    ? (move ? 'It is not on GitHub yet: only the draft in this browser is renamed.' : 'It is not on GitHub yet: this discards the draft kept in this browser.')
+    : move ? `This commits straight to ${state.tree.ref}.${unsaved ? ' Your unsaved changes to it move with it.' : ''}`
+      : `This commits straight to ${state.tree.ref}.${unsaved ? ' Your unsaved changes to it are discarded.' : ''} The file stays in the branch's history.`;
+  $('fileDlg').showModal();
+  if (move) {
+    const i = $('fileTo');
+    const dir = dirname(path);
+    i.focus();
+    i.setSelectionRange(dir ? dir.length + 1 : 0, path.replace(/\.[^./]+$/, '').length);
+    suggestMoveMessage();
+  } else {
+    $('fileMsg').select();
+  }
+}
+
+/** The default message, kept in step with the new path until the user edits it. */
+function suggestMoveMessage() {
+  const msg = $('fileMsg');
+  if (msg.dataset.edited === '1' && msg.value) return;
+  const from = fileAction.path;
+  const to = joinPath('', $('fileTo').value.trim()) || '';
+  msg.value = !to || to === from ? '' : dirname(to) === dirname(from) ? `Rename ${basename(from)} to ${basename(to)}` : `Move ${from} to ${to}`;
+  msg.dataset.edited = '';
+}
+
+/** Why `to` cannot be the new path of `from`, or '' if it can. */
+function badMovePath(from, to) {
+  if (!to) return 'Give the new path.';
+  if (to === from) return 'That is where it is already.';
+  if (/\/$/.test(to)) return 'Give a file name, not a directory.';
+  const entries = state.tree.entries;
+  const hit = entries.find((e) => e.path === to);
+  if (hit) return hit.type === 'dir' ? `${to} is a directory.` : `There is already a file ${to}.`;
+  const parts = to.split('/');
+  for (let i = 1; i < parts.length; i++) {
+    const p = parts.slice(0, i).join('/');
+    if (entries.some((e) => e.type === 'file' && e.path === p)) return `${p} is a file, so it cannot hold others.`;
+  }
+  const repo = state.repo;
+  if (store.get(draftKey({ owner: repo.owner, name: repo.name, ref: state.tree.ref, path: to }))) return `You have a draft of ${to} in this browser; open it and commit or discard it first.`;
+  return '';
+}
+
+async function doFileAction() {
+  const { act, path, entry } = fileAction;
+  const repo = state.repo;
+  const ref = state.tree.ref;
+  const loc = { owner: repo.owner, name: repo.name, ref, path };
+  const isOpen = state.loc && draftKey(state.loc) === draftKey(loc);
+  if (isOpen) saveDraftNow();
+  const err = $('fileError');
+  err.hidden = true;
+  const to = act === 'move' ? joinPath('', $('fileTo').value.trim().replace(/^\/+/, '')) : null;
+  if (act === 'move') {
+    const why = badMovePath(path, to);
+    if (why) {
+      err.textContent = why;
+      err.hidden = false;
+      return;
+    }
+  }
+  const message = $('fileMsg').value.trim();
+  $('fileGo').disabled = true;
+  let r = null;
+  try {
+    if (entry) {
+      const changes = act === 'move'
+        ? [{ path, delete: true, expect: entry.sha }, { path: to, sha: entry.sha, mode: entry.mode, expect: null }]
+        : [{ path, delete: true, expect: entry.sha }];
+      r = await busy(act === 'move' ? `moving ${path}` : `deleting ${path}`,
+        () => state.gh.commitChanges(repo.owner, repo.name, ref, { message, changes }));
+    }
+  } catch (e) {
+    err.textContent = e.message;
+    err.hidden = false;
+    $('fileGo').disabled = false;
+    return;
+  }
+  $('fileDlg').close();
+
+  // what this browser keeps about the file follows it
+  const draft = store.get(draftKey(loc));
+  store.del(draftKey(loc));
+  if (act === 'move') {
+    if (draft) store.set(draftKey({ ...loc, path: to }), draft);
+    movePending(loc, { ...loc, path: to });
+    store.set(K.recent, renameRecent(store.get(K.recent, []), loc, to));
+    if (entry) {
+      entry.path = to;
+      // the directories it may have moved into, for the checks of the next move
+      const parts = to.split('/');
+      for (let i = 1; i < parts.length; i++) {
+        const d = parts.slice(0, i).join('/');
+        if (!state.tree.entries.some((e) => e.path === d)) state.tree.entries.push({ path: d, type: 'dir' });
+      }
+    }
+  } else {
+    forgetImages(draftKey(loc));
+    store.set(K.recent, removeRecent(store.get(K.recent, []), loc));
+    if (entry) state.tree.entries = state.tree.entries.filter((e) => e !== entry);
+  }
+
+  const commit = r ? ` in <a href="${escapeHtml(r.html_url)}" target="_blank" rel="noopener">${r.sha.slice(0, 7)}</a>` : '';
+  toast(act === 'move'
+    ? `Moved ${escapeHtml(path)} to ${escapeHtml(to)}${commit}.`
+    : `Deleted ${escapeHtml(path)}${commit}.`, 9000);
+  status('');
+
+  if (isOpen && act === 'move') {
+    // the same text, under its new name: no need to read it again
+    state.loc = { ...loc, path: to };
+    rememberRecent(state.loc);
+    history.replaceState(null, '', formatFragment(state.loc));
+    if (draft || isDirty()) saveDraftNow();
+    showDoc();
+    if (state.doc.isNew) status(`${to} is new: it will be created when you commit it.`, 'warn');
+  } else if (isOpen) {
+    // nothing to show any more: leave it without keeping a draft of it, and open another file
+    clearTimeout(draftTimer);
+    state.loc = null;
+    openScratch();
+    go({ owner: repo.owner, name: repo.name, ref }, true);
+  } else {
+    renderTree();
+  }
 }
 
 // ---------------------------------------------------------------- new file, download
@@ -1641,7 +2129,12 @@ async function openLocalFile(file) {
 
 // ---------------------------------------------------------------- view, panels, theme
 
+// A phone shows one panel at a time and does not offer "both"; what is chosen there is kept
+// apart from the choice for wider screens, which the same browser may also have.
 function setView(v) {
+  if (!phone.matches) state.wideView = v;
+  else if (v !== 'split') state.phoneView = v;
+  v = phone.matches ? state.phoneView : state.wideView;
   state.view = v;
   $('workspace').dataset.view = v;
   for (const b of document.querySelectorAll('[data-view]')) {
@@ -1653,19 +2146,29 @@ function setView(v) {
   placeSplits();
 }
 
+// On narrow screens the file list is a drawer over the panels: opened for a moment, and not
+// remembered.
 function setFilesVisible(on) {
   $('workspace').classList.toggle('nofiles', !on);
   $('toggleFiles').setAttribute('aria-pressed', String(on));
-  savePrefs();
+  if (!narrow.matches) {
+    state.filesPref = on;
+    savePrefs();
+  }
   lineTops = null;
   previewBlocks = null;
   placeSplits();
 }
 
+function closeDrawer() {
+  if (narrow.matches && !$('workspace').classList.contains('nofiles')) setFilesVisible(false);
+}
+
 function savePrefs() {
   store.set(K.prefs, {
-    view: state.view,
-    files: !$('workspace').classList.contains('nofiles'),
+    view: state.wideView,
+    phoneView: state.phoneView,
+    files: state.filesPref,
     renderer: state.renderer,
     sync: state.sync,
     highlight: hl.on,
@@ -1746,6 +2249,56 @@ function initSplits() {
   }).observe(ws);
 }
 
+// The on-screen keyboard. Chrome on Android shrinks the page for it (the viewport's
+// interactive-widget), Safari only the part of it that is visible: there the page is fitted
+// to the visual viewport (--vvh and --vvtop in app.css). Either way the caret is kept in
+// sight, and while the keyboard is up, body.keyboard lets the narrow layout drop its masthead.
+function initViewport() {
+  const vv = window.visualViewport;
+  if (!vv) return;
+  const root = document.documentElement.style;
+  let width = 0;
+  let tallest = 0;
+  const fit = () => {
+    if (vv.scale > 1.01) return; // zoomed in with two fingers: leave the layout alone
+    if (innerWidth !== width) { // turned: the keyboard has another height now
+      width = innerWidth;
+      tallest = 0;
+    }
+    tallest = Math.max(tallest, vv.height);
+    if (vv.height < innerHeight - 1) {
+      root.setProperty('--vvh', `${Math.round(vv.height)}px`);
+      root.setProperty('--vvtop', `${Math.round(vv.offsetTop)}px`);
+    } else {
+      root.removeProperty('--vvh');
+      root.removeProperty('--vvtop');
+    }
+    const typing = !!document.activeElement?.matches('input, textarea, select');
+    document.body.classList.toggle('keyboard', typing && vv.height < tallest * 0.75);
+    requestAnimationFrame(keepCaretInView);
+  };
+  vv.addEventListener('resize', fit);
+  vv.addEventListener('scroll', fit);
+  addEventListener('focusout', () => setTimeout(fit, 100));
+  fit();
+}
+
+/** Scroll the editor so that the caret is in sight, if it is not. */
+function keepCaretInView() {
+  const ta = src();
+  if (document.activeElement !== ta) return;
+  const pad = prepareMirror();
+  const mark = document.createElement('span');
+  mark.textContent = '\u200b';
+  mirror.replaceChildren(document.createTextNode(ta.value.slice(0, ta.selectionEnd)), mark);
+  const top = mark.offsetTop + pad;
+  const bottom = top + mark.offsetHeight;
+  mirror.replaceChildren();
+  if (top < ta.scrollTop || bottom > ta.scrollTop + ta.clientHeight) {
+    ta.scrollTop = Math.max(0, top - ta.clientHeight / 3);
+  }
+}
+
 function initTheme() {
   $('theme').addEventListener('click', () => {
     const cur = document.documentElement.dataset.theme
@@ -1791,6 +2344,7 @@ export async function boot() {
   initTheme();
   initInstall();
   initSplits();
+  initViewport();
 
   const prefs = store.get(K.prefs, {});
   state.renderer = prefs.renderer === 'github' ? 'github' : 'local';
@@ -1799,8 +2353,14 @@ export async function boot() {
   $('syncScroll').checked = state.sync;
   hl.on = prefs.highlight !== false;
   $('highlight').checked = hl.on;
-  setView(['edit', 'split', 'preview'].includes(prefs.view) ? prefs.view : 'split');
-  setFilesVisible(prefs.files !== false && innerWidth > 900);
+  state.wideView = ['edit', 'split', 'preview'].includes(prefs.view) ? prefs.view : 'split';
+  state.phoneView = prefs.phoneView === 'preview' ? 'preview' : 'edit';
+  state.filesPref = prefs.files !== false;
+  setView(phone.matches ? state.phoneView : state.wideView);
+  setFilesVisible(state.filesPref && !narrow.matches);
+  // a tablet turned, or a window resized across the breakpoints
+  phone.addEventListener('change', () => setView(phone.matches ? state.phoneView : state.wideView));
+  narrow.addEventListener('change', () => setFilesVisible(state.filesPref && !narrow.matches));
 
   // toolbar
   for (const b of document.querySelectorAll('[data-cmd]')) {
@@ -1809,6 +2369,7 @@ export async function boot() {
   }
   for (const b of document.querySelectorAll('button[data-view]')) b.addEventListener('click', () => setView(b.dataset.view));
   $('toggleFiles').addEventListener('click', () => setFilesVisible($('workspace').classList.contains('nofiles')));
+  $('scrim').addEventListener('click', closeDrawer);
   $('openRepo').addEventListener('click', openRepoDialog);
   $('openRepo2').addEventListener('click', openRepoDialog);
   $('download').addEventListener('click', download);
@@ -1823,6 +2384,9 @@ export async function boot() {
   const ta = src();
   ta.addEventListener('input', onTextChanged);
   ta.addEventListener('keydown', onKeyDown);
+  ta.addEventListener('paste', onPaste);
+  ta.addEventListener('dragover', onDragOver);
+  ta.addEventListener('drop', onDrop);
   for (const ev of ['keyup', 'click', 'select']) ta.addEventListener(ev, updateStats);
   ta.addEventListener('scroll', () => {
     scrollHl();
@@ -1929,6 +2493,18 @@ export async function boot() {
   });
   $('showDiff').addEventListener('click', showDiff);
   $('prBranch').addEventListener('focus', () => { document.querySelector('input[name="target"][value="pr"]').checked = true; });
+  $('forkBranch').addEventListener('focus', () => { document.querySelector('input[name="target"][value="fork"]').checked = true; });
+
+  // rename, move, delete
+  $('fileForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    doFileAction();
+  });
+  $('fileTo').addEventListener('input', () => {
+    $('fileError').hidden = true;
+    suggestMoveMessage();
+  });
+  $('fileMsg').addEventListener('input', () => { $('fileMsg').dataset.edited = '1'; });
 
   // new file
   $('newForm').addEventListener('submit', (e) => {
@@ -1938,6 +2514,7 @@ export async function boot() {
 
   // keyboard
   document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !document.querySelector('dialog[open]')) closeDrawer();
     const mod = e.ctrlKey || e.metaKey;
     if (e.key === 'F3' && find.open && !mod && !e.altKey) {
       e.preventDefault();
