@@ -5,6 +5,8 @@
 // Only GitHub calls (through github.js) and waiting, which is injected: the whole sequence
 // runs in the tests against a fake fetch.
 
+import { encodeFile } from './github.js';
+
 /** Something the user has to fix on github.com; `actions` are the pages to do it on. */
 export class ForkError extends Error {
   /** @param {...({url: string, label: string}|null)} actions (nulls are left out) */
@@ -55,7 +57,9 @@ export async function findFork(gh, up, login) {
  * @param {import('./github.js').GitHub} gh
  * @param {{upstream: {owner: string, name: string, ref: string, path: string}, login: string,
  *   branch: string, text: string, message: string, sha: string|null, title: string, body: string,
- *   installUrl?: string, resume?: boolean, images?: {path: string, blobBase64: string}[]}} o
+ *   installUrl?: string, resume?: boolean, images?: {path: string, blobBase64: string}[],
+ *   format?: import('./github.js').FileFormat}} o
+ *   `format`: the file's line endings and BOM, as getFile found them
  *   `images`: pasted images to commit with the document (in the same commit; each must be
  *   new, as for a direct commit)
  *   `resume`: an earlier attempt created `branch` in the fork and failed after that (the
@@ -76,6 +80,7 @@ export async function proposeChange(gh, o, env = {}) {
   const install = app && o.installUrl ? { url: o.installUrl, label: 'install meditor on your fork' } : null;
 
   if (lower(o.login) === lower(up.owner)) throw new ForkError(`${full} is in your own account, so it cannot be forked there.`);
+  encodeFile(o.text, o.format, up.path); // a file that was not UTF-8 is refused before anything is forked
 
   say(`reading ${full} @ ${up.ref}`);
   const base = await gh.branchSha(up.owner, up.name, up.ref);
@@ -150,12 +155,12 @@ export async function proposeChange(gh, o, env = {}) {
   let put;
   try {
     if (o.images?.length) {
-      const changes = [{ path: up.path, text: o.text, expect: o.sha ?? null }];
+      const changes = [{ path: up.path, text: o.text, format: o.format, expect: o.sha ?? null }];
       for (const i of o.images) changes.push({ path: i.path, blobBase64: i.blobBase64, expect: null });
       const c = await gh.commitChanges(fork.owner, fork.name, o.branch, { message: o.message, changes });
       put = { sha: c.blobs[up.path], commit: { sha: c.sha, html_url: c.html_url } };
     } else {
-      put = await gh.putFile(fork.owner, fork.name, up.path, { text: o.text, message: o.message, branch: o.branch, sha: o.sha });
+      put = await gh.putFile(fork.owner, fork.name, up.path, { text: o.text, message: o.message, branch: o.branch, sha: o.sha, format: o.format });
     }
   } catch (e) {
     throw cannotWrite(e);

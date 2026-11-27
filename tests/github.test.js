@@ -34,7 +34,7 @@ test('reads a file, and sends the token', async () => {
     'GET /repos/o/r/contents/docs/a%20b.md?ref=main': { body: { type: 'file', sha: 's1', encoding: 'base64', content: encodeBase64('# hi') } },
   });
   const gh = new GitHub('T', f);
-  assert.deepEqual(await gh.getFile('o', 'r', 'docs/a b.md', 'main'), { text: '# hi', sha: 's1' });
+  assert.deepEqual(await gh.getFile('o', 'r', 'docs/a b.md', 'main'), { text: '# hi', sha: 's1', format: { eol: '\n', bom: false, utf8: true } });
   assert.equal(f.calls[0].headers.Authorization, 'Bearer T');
   assert.equal(await gh.getFile('o', 'r', 'missing.md', 'main'), null);
 });
@@ -95,14 +95,15 @@ test('commits several files in one commit', async () => {
 
 test('a move reuses the blob and keeps the mode, and checks both paths first', async () => {
   const f = fake(gitRoutes({
-    'GET /repos/o/r/contents/a.md?ref=c0': { body: { type: 'file', sha: 's1' } },
+    'GET /repos/o/r/git/trees/t0': { body: { tree: [{ path: 'a.md', type: 'blob', sha: 's1' }, { path: 'b', type: 'tree', sha: 't-b' }] } },
+    'GET /repos/o/r/git/trees/t-b': { body: { tree: [] } },
   }));
   await new GitHub('T', f).commitChanges('o', 'r', 'main', {
     message: 'Rename a.md to b/c.md',
     changes: [{ path: 'a.md', delete: true, expect: 's1' }, { path: 'b/c.md', sha: 's1', mode: '100755', expect: null }],
   });
   assert.ok(!f.calls.some((c) => c.url.endsWith('/git/blobs')), 'no new blob');
-  assert.ok(f.calls.some((c) => c.url.endsWith('/contents/b/c.md?ref=c0')), 'looked for the new path');
+  assert.ok(f.calls.some((c) => c.url.endsWith('/git/trees/t-b')), 'looked for the new path');
   const tree = f.calls.find((c) => c.url.endsWith('/git/trees')).body.tree;
   assert.deepEqual(tree, [
     { path: 'a.md', mode: '100644', type: 'blob', sha: null },
@@ -112,12 +113,11 @@ test('a move reuses the blob and keeps the mode, and checks both paths first', a
 
 test('a file changed meanwhile, or taken, is refused before anything is written', async () => {
   const f = fake(gitRoutes({
-    'GET /repos/o/r/contents/a.md?ref=c0': { body: { type: 'file', sha: 'theirs' } },
-    'GET /repos/o/r/contents/b.md?ref=c0': { body: { type: 'file', sha: 'x' } },
+    'GET /repos/o/r/git/trees/t0': { body: { tree: [{ path: 'a.md', type: 'blob', sha: 'theirs' }, { path: 'b.md', type: 'blob', sha: 'x' }] } },
   }));
   const gh = new GitHub('T', f);
   await assert.rejects(gh.commitChanges('o', 'r', 'main', { message: 'm', changes: [{ path: 'a.md', text: 'mine', expect: 'ours' }] }),
-    (e) => e.status === 409 && e.body.path === 'a.md' && /changed on GitHub/.test(e.message));
+    (e) => e.status === 409 && e.body.path === 'a.md' && e.body.conflict && /changed on GitHub/.test(e.message));
   await assert.rejects(gh.commitChanges('o', 'r', 'main', { message: 'm', changes: [{ path: 'b.md', sha: 's', expect: null }] }),
     (e) => e.status === 409 && /already exists/.test(e.message));
   assert.ok(!f.calls.some((c) => c.method !== 'GET'), 'nothing written');
@@ -226,5 +226,5 @@ test('names, branches and paths GitHub allows still go through', async () => {
   const f = fake({
     'GET /repos/my_org-1/r.js_x/contents/docs/a%20..b/...md?ref=feat%2Fx.y': { body: { type: 'file', sha: 's', encoding: 'base64', content: '' } },
   });
-  assert.deepEqual(await new GitHub('T', f).getFile('my_org-1', 'r.js_x', 'docs/a ..b/...md', 'feat/x.y'), { text: '', sha: 's' });
+  assert.deepEqual((await new GitHub('T', f).getFile('my_org-1', 'r.js_x', 'docs/a ..b/...md', 'feat/x.y')).text, '');
 });

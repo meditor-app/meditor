@@ -5,8 +5,9 @@
  *   of unchanged text around each change; '…' marks skipped unchanged lines
  */
 export function lineDiff(before, after, context = 2) {
-  const a = before.split('\n');
-  const b = after.split('\n');
+  // an empty text has no lines (not one empty line), as a new file's base has none
+  const a = before === '' ? [] : before.split('\n');
+  const b = after === '' ? [] : after.split('\n');
   let pre = 0;
   while (pre < a.length && pre < b.length && a[pre] === b[pre]) pre++;
   let suf = 0;
