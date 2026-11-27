@@ -1,9 +1,9 @@
 // The page: account, repository and file navigation, the editor, the preview, commits.
 // The only module that touches the DOM.
 
-import { renderMarkdown, sanitizeHtml, escapeHtml, ID_PREFIX } from './markdown.js';
+import { renderMarkdown, sanitizeHtml, escapeHtml, isExternalLink, ID_PREFIX } from './markdown.js';
 import { GitHub, MARKDOWN_EXT, bytesToBase64 } from './github.js';
-import { Auth, AUTH_KEY, credentialStore, keepSignIn } from './auth.js';
+import { Auth, AUTH_KEY, credentialStore, keepSignIn, signInReturn } from './auth.js';
 import { GITHUB_APP } from './config.js';
 import {
   parseFragment, formatFragment, parseGitHubUrl, splitRefPath, resolveRef, githubUrl, rawUrl,
@@ -59,7 +59,7 @@ request.
 
 | you type | you get |
 | --- | --- |
-| \`**bold**\`, \`_italic_\`, \`~~struck~~\` | **bold**, _italic_, ~~struck~~ |
+| \`**bold**\`, \`*italic*\`, \`~~struck~~\` | **bold**, *italic*, ~~struck~~ |
 | \`[a link](https://github.com)\` | [a link](https://github.com) |
 | \`- [ ] a task\` | a box you can tick, here too |
 
@@ -195,21 +195,22 @@ async function signInWithGitHub() {
  * repositories (?installation_id=…&setup_action=…). Returns where to go next.
  */
 async function finishSignIn() {
-  const q = new URLSearchParams(location.search);
-  if (!q.has('code') && !q.has('setup_action') && !q.has('error')) return;
+  if (!signInReturn(location.search, null)) return;
   let pending = null;
   try { pending = JSON.parse(sessionStorage.getItem(K.pending) || 'null'); sessionStorage.removeItem(K.pending); } catch { /* none */ }
+  const back = signInReturn(location.search, pending);
   // drop the query: the code is single-use and should not stay in the address or history
   history.replaceState(null, '', location.pathname + (pending?.hash || location.hash));
-  if (q.has('error')) {
-    toast(`GitHub did not sign you in: ${escapeHtml(q.get('error_description') || q.get('error'))}`, 8000);
+  if (back.kind === 'ignore') return; // an error that answers no sign-in of this tab
+  if (back.kind === 'error') {
+    toast(`GitHub did not sign you in: ${escapeHtml(back.message)}`, 8000);
     return;
   }
-  if (q.has('code')) {
+  if (back.kind === 'code') {
     let issued = false;
     try {
       credStore.remember = true;
-      await auth.complete(q.get('code'), q.get('state'), pending);
+      await auth.complete(back.code, back.state, pending);
       issued = true;
       forgetRepos();
       await useCredentials();
@@ -516,7 +517,7 @@ const sel = () => ({ text: src().value, start: src().selectionStart, end: src().
 
 const COMMANDS = {
   bold: (s) => wrap(s, '**', '**', 'bold text'),
-  italic: (s) => wrap(s, '_', '_', 'italic text'),
+  italic: (s) => wrap(s, '*', '*', 'italic text'), // '_' does not work inside a word
   strike: (s) => wrap(s, '~~', '~~', 'struck text'),
   code: (s) => wrap(s, '`', '`', 'code'),
   h1: (s) => heading(s, 1),
@@ -1239,14 +1240,16 @@ async function renderPreview(now = false) {
 /** Raw HTML in the document, and GitHub's renderer, leave relative links and images as written. */
 function fixRelative(root) {
   for (const a of root.querySelectorAll('a[href]')) {
-    const href = a.getAttribute('href');
-    if (/^https?:/i.test(href)) {
+    let href = a.getAttribute('href');
+    if (!/^[a-z][a-z0-9+.-]*:|^\/\/|^#/i.test(href)) {
+      href = resolveLink(href);
+      a.setAttribute('href', href);
+    }
+    if (isExternalLink(href)) {
       // never navigate the editor away (or hand the new page a handle on it)
       a.target = '_blank';
       a.rel = 'noopener noreferrer nofollow';
     }
-    if (/^[a-z][a-z0-9+.-]*:|^\/\/|^#/i.test(href)) continue;
-    a.setAttribute('href', resolveLink(href));
   }
   for (const img of root.querySelectorAll('img[src]')) {
     const s = img.getAttribute('src');

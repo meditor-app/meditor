@@ -62,6 +62,21 @@ test('serves only the allowed pages, and only POST', async () => {
   assert.equal((await handle(req('/token', { code: 'c' }), { ...ENV, GITHUB_CLIENT_SECRET: '' })).status, 500);
 });
 
+test('answers a body that is not a small JSON object with 400, not a crash', async () => {
+  // #32: `null` made handle() throw, and Cloudflare answered 500 without CORS headers
+  const raw = (body) => new Request('https://relay.example/token', {
+    method: 'POST', headers: { Origin: ORIGIN, 'Content-Type': 'application/json' }, body,
+  });
+  const bodies = ['null', '1', '"x"', 'true', '[]', '["c"]', '{', '', JSON.stringify({ code: 'c', pad: 'x'.repeat(17000) })];
+  for (const body of bodies) {
+    const res = await handle(raw(body), ENV);
+    assert.equal(res.status, 400, body.slice(0, 20));
+    assert.equal(res.headers.get('access-control-allow-origin'), ORIGIN);
+    assert.deepEqual(await res.json(), { error: 'bad_request' });
+  }
+  assert.equal(sent.length, 0);
+});
+
 test('tells GitHub saying no (400) from GitHub being unavailable (502)', async () => {
   const answers = [
     [() => new Response('<html>Unicorn!</html>', { status: 503 }), 502],

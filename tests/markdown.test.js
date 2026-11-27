@@ -1,6 +1,20 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { renderMarkdown, sanitizeHtml, slugify } from '../src/markdown.js';
+import { renderMarkdown, sanitizeHtml, slugify, isExternalLink } from '../src/markdown.js';
+import { toggleTask } from '../src/edit.js';
+
+test('links to other sites open in a new tab, protocol-relative ones too (#32)', () => {
+  // `//host` used to replace the editor in its own tab
+  assert.equal(renderMarkdown('[a](//evil.example/login) [b](https://x.y)'),
+    '<p data-line="0"><a href="//evil.example/login" rel="nofollow noopener" target="_blank">a</a> <a href="https://x.y" rel="nofollow noopener" target="_blank">b</a></p>');
+  // raw and GitHub-rendered HTML get target and rel from ui.js fixRelative, by the same test
+  for (const href of ['//evil.example', '/\\evil.example', '\\\\evil.example', 'https://x.y', 'HTTP://x.y', 'http:x.y', ' //evil.example', '/\t/evil.example']) {
+    assert.ok(isExternalLink(href), href);
+  }
+  for (const href of ['#x', '#repo=a/b&path=c.md', 'x.md', '/x.md', '../x.md', 'mailto:a@b.c', 'tel:1']) {
+    assert.ok(!isExternalLink(href), href);
+  }
+});
 
 // Compare without the data-line attributes, which only the page cares about.
 const md = (s, o) => renderMarkdown(s, o).replace(/ data-line="\d+"/g, '').trim();
@@ -176,4 +190,23 @@ test('emoji shortcodes become emoji, outside code; unknown ones stay as written'
   assert.equal(md('[:rocket: go](x.md) https://x.org/:tada:'),
     '<p><a href="x.md">🚀 go</a> <a href="https://x.org/:tada" rel="nofollow noopener" target="_blank">https://x.org/:tada</a>:</p>');
   assert.match(md('# :sparkles: New'), /<\/a>✨ New<\/h1>$/);
+});
+
+test('every task box the renderer emits can be ticked by toggleTask', () => {
+  const docs = [
+    '- [ ] a\n- [x] b',
+    '---\ntitle: x\n---\n- [ ] after front matter',
+    '- a\n  - [ ] nested\n    1. [x] deeper',
+    '- [ ] lazy\ncontinuation\n- [ ] next',
+    '- item\n\n  ```\n  - [ ] not a task\n  ```\n- [ ] task',
+    '> - [ ] in quote\n> > 1) [x] in nested quote',
+    '- > - [ ] in quote in list',
+    '1. > * [x] in quote in numbered item',
+    '- [ ] crlf\r\n- [x] crlf',
+  ];
+  for (const doc of docs) {
+    const lines = [...renderMarkdown(doc).matchAll(/class="task-list-item-checkbox"[^>]*data-line="(\d+)"/g)];
+    assert.ok(lines.length > 0, doc);
+    for (const [, line] of lines) assert.notEqual(toggleTask(doc, +line), doc, `${JSON.stringify(doc)} line ${line}`);
+  }
 });
