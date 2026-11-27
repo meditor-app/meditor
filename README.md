@@ -6,7 +6,7 @@ Edit the Markdown files of your GitHub repositories in the browser: the source o
 the rendered page on the other, and a commit (or a pull request) when you are done.
 In the spirit of [prose.io](https://prose.io), as one static page.
 
-**→ <https://ondrik.github.io/meditor/>**
+**→ <https://meditor-app.github.io/meditor/>**
 
 No installation, no dependencies: the page talks to `api.github.com` directly from your
 browser. The only server-side piece is a tiny relay that completes *Sign in with GitHub*.
@@ -82,17 +82,25 @@ small Cloudflare Worker, does just that step (and token renewal): it adds the se
 GitHub, and hands the answer back. It stores and logs nothing, and serves only the pages
 listed in `ALLOWED_ORIGINS`. This is the same arrangement as prose.io's Gatekeeper.
 
+### Why its own address
+
+The sign-in tokens live in the browser's local storage, which every page of the same
+*origin* can read. meditor is therefore published from an organization of its own,
+`meditor-app`, whose GitHub Pages origin (`meditor-app.github.io`) hosts nothing else. It
+used to live at `ondrik.github.io/meditor/`, shared with the other pages of that account;
+that address now forwards here.
+
 ### Setting up Sign in with GitHub
 
 Needed once, by whoever deploys meditor. Until it is done the page offers tokens only.
 
 1. **Register a GitHub App** at <https://github.com/settings/apps/new>:
-   - *GitHub App name*: e.g. `meditor`; *Homepage URL*: `https://ondrik.github.io/meditor/`
-   - *Callback URL*: `https://ondrik.github.io/meditor/`; add a second one,
+   - *GitHub App name*: e.g. `meditor`; *Homepage URL*: `https://meditor-app.github.io/meditor/`
+   - *Callback URL*: `https://meditor-app.github.io/meditor/`; add a second one,
      `http://localhost:8000/`, for development
    - *Expire user authorization tokens*: on. *Request user authorization (OAuth) during
      installation*: **off**. *Enable Device Flow*: off.
-   - *Setup URL*: `https://ondrik.github.io/meditor/`, with *Redirect on update* on
+   - *Setup URL*: `https://meditor-app.github.io/meditor/`, with *Redirect on update* on
    - *Webhook*: uncheck *Active*
    - *Repository permissions*: **Contents: Read and write**, **Pull requests: Read and
      write** (Metadata: Read-only is added by itself)

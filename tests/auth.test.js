@@ -25,23 +25,23 @@ function relay(handlers) {
 test('PKCE challenge is base64url SHA-256 of the verifier', async () => {
   // base64url(SHA-256(verifier)), checked with openssl
   assert.equal(await challenge('dBjftJeZ4CVP-mB92K27uhbUJU1p1r7wW1gFWFOEjXk'), 'bwWFMyPfdG9qreDhH2lmftFx_dFeLDalzcT1gb_j68g');
-  assert.equal(redirectUri('https://ondrik.github.io/meditor/index.html?x=1#repo=a/b'), 'https://ondrik.github.io/meditor/');
+  assert.equal(redirectUri('https://meditor-app.github.io/meditor/index.html?x=1#repo=a/b'), 'https://meditor-app.github.io/meditor/');
 });
 
 test('sign-in round trip: authorize URL, code for token, state checked', async () => {
   const f = relay({ '/token': () => [200, { access_token: 'ghu_1', expires_in: 28800, refresh_token: 'ghr_1', refresh_token_expires_in: 15897600 }] });
   const a = new Auth(APP, memory(), { fetchImpl: f, now: () => 1000 });
-  const { url, pending } = await a.begin('https://ondrik.github.io/meditor/#repo=o/r');
+  const { url, pending } = await a.begin('https://meditor-app.github.io/meditor/#repo=o/r');
   const u = new URL(url);
   assert.equal(u.origin + u.pathname, 'https://github.com/login/oauth/authorize');
   assert.equal(u.searchParams.get('client_id'), 'Iv1.abc');
-  assert.equal(u.searchParams.get('redirect_uri'), 'https://ondrik.github.io/meditor/');
+  assert.equal(u.searchParams.get('redirect_uri'), 'https://meditor-app.github.io/meditor/');
   assert.equal(u.searchParams.get('code_challenge'), await challenge(pending.verifier));
   await assert.rejects(a.complete('c', 'forged', pending), AuthError);
   const c = await a.complete('c', pending.state, pending);
   assert.deepEqual(c, { kind: 'app', token: 'ghu_1', expires: 1000 + 28800e3, refresh: 'ghr_1', refreshExpires: 1000 + 15897600e3 });
   assert.equal(f.calls[0].url, 'https://relay.example/token');
-  assert.deepEqual(f.calls[0].body, { code: 'c', redirect_uri: 'https://ondrik.github.io/meditor/', code_verifier: pending.verifier });
+  assert.deepEqual(f.calls[0].body, { code: 'c', redirect_uri: 'https://meditor-app.github.io/meditor/', code_verifier: pending.verifier });
   // persisted
   assert.equal(new Auth(APP, a.store).creds.token, 'ghu_1');
 });

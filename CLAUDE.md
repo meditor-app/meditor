@@ -30,6 +30,13 @@ after quedit (`~/quedit`), whose palette and panel layout it shares.
   copied in `.github/workflows/pages.yml`. The PNG icons are rendered from `icons/icon.svg`
   and `icons/icon-maskable.svg` with `rsvg-convert`.
 
+## Hosting
+
+The site is `https://meditor-app.github.io/meditor/`, in the `meditor-app` organization so
+that the origin is meditor's alone: local storage (the sign-in tokens, drafts) is shared by
+every page of an origin (#12). **Never add another GitHub Pages site to `meditor-app`.** The
+old address, `ondrik.github.io/meditor/`, is a forwarding page in `ondrik/meditor`.
+
 ## Workflow
 
 `master` is protected: every change goes through a pull request (opened as a draft), CI's

@@ -2,8 +2,8 @@ import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { handle } from '../worker/relay.js';
 
-const ENV = { GITHUB_CLIENT_ID: 'Iv1.abc', GITHUB_CLIENT_SECRET: 's3cret', ALLOWED_ORIGINS: 'https://ondrik.github.io, http://localhost:8000' };
-const ORIGIN = 'https://ondrik.github.io';
+const ENV = { GITHUB_CLIENT_ID: 'Iv1.abc', GITHUB_CLIENT_SECRET: 's3cret', ALLOWED_ORIGINS: 'https://meditor-app.github.io, http://localhost:8000' };
+const ORIGIN = 'https://meditor-app.github.io';
 
 let realFetch;
 let sent;
@@ -25,12 +25,12 @@ const req = (path, body, origin = ORIGIN, method = 'POST') => new Request(`https
 });
 
 test('trades a code for a token, adding the secret', async () => {
-  const res = await handle(req('/token', { code: 'c', redirect_uri: 'https://ondrik.github.io/meditor/', code_verifier: 'v' }), ENV);
+  const res = await handle(req('/token', { code: 'c', redirect_uri: 'https://meditor-app.github.io/meditor/', code_verifier: 'v' }), ENV);
   assert.equal(res.status, 200);
   assert.equal(res.headers.get('access-control-allow-origin'), ORIGIN);
   assert.deepEqual(await res.json(), { access_token: 'ghu_x', token_type: 'bearer' });
   assert.equal(sent[0].url, 'https://github.com/login/oauth/access_token');
-  assert.deepEqual(sent[0].body, { client_id: 'Iv1.abc', client_secret: 's3cret', code: 'c', redirect_uri: 'https://ondrik.github.io/meditor/', code_verifier: 'v' });
+  assert.deepEqual(sent[0].body, { client_id: 'Iv1.abc', client_secret: 's3cret', code: 'c', redirect_uri: 'https://meditor-app.github.io/meditor/', code_verifier: 'v' });
 });
 
 test('refreshes and revokes', async () => {
