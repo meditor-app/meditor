@@ -688,6 +688,13 @@ function onPreviewClick(e) {
     $('previewScroll').scrollTop = keep;
     return;
   }
+  // "switch the renderer to GitHub (exact)" under a Mermaid diagram's source
+  const sw = e.target.closest('button.mermaid-switch[data-renderer]');
+  if (sw) {
+    $('renderer').value = sw.dataset.renderer;
+    $('renderer').dispatchEvent(new Event('change'));
+    return;
+  }
   const a = e.target.closest('a[href]');
   if (!a) return;
   const href = a.getAttribute('href');

@@ -31,10 +31,13 @@ browser. The only server-side piece is a tiny relay that completes *Sign in with
   - *source / both / rendered* choose the panels; *files* hides the file list; drag the gaps
     between panels to resize them (double-click to reset)
 - **Rendering**: *meditor (live)* renders as you type, GitHub-flavoured: tables, task lists,
-  strikethrough, autolinks, footnotes, alerts (`> [!NOTE]`), front matter, and HTML (sanitised
-  much like GitHub does). *GitHub (exact)* asks GitHub to render it, which is exactly what
-  github.com shows (syntax highlighting included) but costs one API request per pause in
-  typing.
+  strikethrough, autolinks, footnotes, alerts (`> [!NOTE]`), front matter, emoji shortcodes
+  (`:tada:`), syntax colours in code blocks (JavaScript/TypeScript, Python, shell, JSON, YAML,
+  C/C++, Java, Rust, Go, HTML/XML, CSS, diff), and HTML (sanitised much like GitHub does).
+  Math (`$…$`, `$$…$$`, ```` ```math ````) and Mermaid diagrams are shown as their source, set
+  apart: GitHub draws them with scripts this page does not load. *GitHub (exact)* asks GitHub
+  to render it, which is exactly what github.com shows (math and diagrams included) but costs
+  one API request per pause in typing.
 - **Commit** with *commit…* (`Ctrl+S`): see the changes, write a message, and commit straight
   to the branch, or to a new branch with a pull request opened for you. If the file changed on
   GitHub meanwhile, GitHub refuses the commit rather than lose that change; load the latest
@@ -144,6 +147,8 @@ same files are what GitHub Pages serves.
 | file | what |
 | --- | --- |
 | `src/markdown.js` | GitHub-flavoured Markdown → HTML, and the HTML sanitiser |
+| `src/highlight.js` | syntax colours for code blocks, with GitHub's class names |
+| `src/emoji.js` | the emoji shortcodes (`:tada:`) |
 | `src/github.js` | the REST API calls (files, trees, branches, commits, pull requests) |
 | `src/auth.js` | signing in: the GitHub App's OAuth flow (with PKCE), token renewal, tokens |
 | `src/config.js` | the GitHub App's client ID and slug, and the relay's URL |
