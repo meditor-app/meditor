@@ -54,3 +54,75 @@ test('whatever lays out the source text is set on its highlighted copy too', () 
   }
   assert.ok(checked >= 3, `found only ${checked} rules`);
 });
+
+/**
+ * Runs sw.js in a sandbox registered at `scope`, with a network that answers every page (until
+ * `offline()`). Returns its cache and a function that navigates to a URL.
+ */
+async function serviceWorker(scope) {
+  const { runInNewContext } = await import('node:vm');
+  const handlers = {};
+  const cache = new Map(); // url -> body
+  const caches = {
+    open: async () => ({
+      put: async (req, res) => { cache.set(req.url, await res.text()); },
+      addAll: async (urls) => { for (const u of urls) cache.set(new URL(u, scope).href, `shell ${u}`); },
+    }),
+    match: async (req, { ignoreSearch } = {}) => {
+      const u = new URL(req.url);
+      if (ignoreSearch) u.search = '';
+      return cache.has(u.href) ? new Response(cache.get(u.href)) : undefined;
+    },
+    keys: async () => [],
+    delete: async () => true,
+  };
+  let online = true;
+  const fetch = async (req) => {
+    if (!online) throw new TypeError('offline');
+    return new Response(`page ${new URL(req.url).pathname}`, { status: 200 });
+  };
+  const self = {
+    location: new URL(scope),
+    registration: { scope },
+    clients: { claim: async () => {} },
+    skipWaiting: async () => {},
+    addEventListener: (type, f) => { handlers[type] = f; },
+  };
+  runInNewContext(read('sw.js'), { self, caches, fetch, Request, Response, URL, Promise });
+  const wait = [];
+  handlers.install({ waitUntil: (p) => wait.push(p) });
+  await Promise.all(wait);
+  async function navigate(url) {
+    let answer = null;
+    handlers.fetch({ request: { url, method: 'GET', mode: 'navigate' }, respondWith: (p) => { answer = p; } });
+    // not answered by the worker: the browser asks the network itself
+    const res = await (answer ?? fetch({ url })).catch(() => Response.error());
+    await new Promise((r) => setTimeout(r, 0)); // let the cache write finish
+    return res.type === 'error' ? null : res.text();
+  }
+  return { cache, navigate, offline: () => { online = false; } };
+}
+
+test('the service worker keeps only the app itself as the page to start offline', async () => {
+  // #32: opening the old /meditor/ address (a forwarding page) replaced the cached app, so the
+  // installed app showed "meditor has moved" offline and reloaded forever
+  const sw = await serviceWorker('https://meditor-app.github.io/');
+  assert.equal(await sw.navigate('https://meditor-app.github.io/?code=c&state=s'), 'page /');
+  assert.equal(await sw.navigate('https://meditor-app.github.io/meditor/#repo=a/b'), 'page /meditor/');
+  assert.equal(await sw.navigate('https://meditor-app.github.io/icons/icon.svg'), 'page /icons/icon.svg');
+  assert.equal(sw.cache.get('https://meditor-app.github.io/'), 'page /');
+  assert.ok(!sw.cache.has('https://meditor-app.github.io/meditor/'));
+  await sw.navigate('https://meditor-app.github.io/index.html');
+  assert.equal(sw.cache.get('https://meditor-app.github.io/'), 'page /index.html');
+  sw.offline();
+  assert.equal(await sw.navigate('https://meditor-app.github.io/?x=1#repo=a/b'), 'page /index.html');
+  assert.equal(await sw.navigate('https://meditor-app.github.io/meditor/'), null);
+});
+
+test('package.json asks for a Node that has what the code uses', () => {
+  // src/auth.js uses the global `crypto` (Web Crypto), which Node has without a flag from 19 on
+  const pkg = JSON.parse(read('package.json'));
+  const min = Number(pkg.engines.node.match(/^>=\s*(\d+)/)[1]);
+  assert.ok(min >= 20, `engines.node is ${pkg.engines.node}`);
+  assert.match(read('src/auth.js'), /\bcrypto\.getRandomValues/);
+});
