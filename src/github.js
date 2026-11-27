@@ -29,12 +29,64 @@ export function bytesToBase64(bytes) {
   return btoa(bin);
 }
 
-/** Base64 (possibly wrapped over lines, as the API sends it) to UTF-8 text. */
-export function decodeBase64(b64) {
+/** Base64 (possibly wrapped over lines, as the API sends it) to bytes. */
+function base64ToBytes(b64) {
   const bin = atob(b64.replace(/\s+/g, ''));
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return new TextDecoder().decode(bytes);
+  return bytes;
+}
+
+/** Base64 (possibly wrapped over lines, as the API sends it) to UTF-8 text. */
+export function decodeBase64(b64) {
+  return new TextDecoder().decode(base64ToBytes(b64));
+}
+
+// A file as the editor holds it, and back. A textarea turns every CRLF (and lone CR) into
+// LF, and a byte-order mark would be an invisible first character, so the text is kept with
+// LF and no BOM, and `format` says how to write it back: the same line endings and BOM as
+// the file had, so that a commit changes only the lines the user changed. A file that is not
+// UTF-8 (Latin-1, Windows-1250, …) cannot be shown as it is: its text has U+FFFD for the
+// bytes that could not be read, and `utf8: false` stops it from being committed, since that
+// would write U+FFFD over them for good.
+
+/** @typedef {{eol: '\n'|'\r\n', bom: boolean, utf8: boolean}} FileFormat */
+
+/** How a new file is written. */
+export const PLAIN_FORMAT = Object.freeze({ eol: '\n', bom: false, utf8: true });
+
+/** @returns {{text: string, format: FileFormat}} */
+export function decodeFile(b64) {
+  const bytes = base64ToBytes(b64);
+  let raw;
+  let utf8 = true;
+  try {
+    raw = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch {
+    raw = new TextDecoder('utf-8', { ignoreBOM: true }).decode(bytes);
+    utf8 = false;
+  }
+  const bom = raw.startsWith('\uFEFF');
+  if (bom) raw = raw.slice(1);
+  // the line ending most lines have (a file with both gets that one throughout)
+  const crlf = (raw.match(/\r\n/g) || []).length;
+  const lf = (raw.match(/\n/g) || []).length - crlf;
+  return { text: raw.replace(/\r\n?/g, '\n'), format: { eol: crlf > lf ? '\r\n' : '\n', bom, utf8 } };
+}
+
+/**
+ * The editor's text as the file's text, in its format (none: as it is). Throws for a file
+ * that was not UTF-8 rather than corrupt it.
+ * @param {string} text @param {FileFormat} [format] @param {string} [path] for the message
+ */
+export function encodeFile(text, format, path = 'This file') {
+  if (!format) return text;
+  if (format.utf8 === false) {
+    throw new GitHubError(400, `${path} is not UTF-8 text (it may be Latin-1 or another old encoding), so meditor shows the characters it cannot read as �. Committing would write � over them for good, so meditor does not commit it. Convert the file to UTF-8 first.`, { notUtf8: true });
+  }
+  let t = text.replace(/\r\n?/g, '\n');
+  if (format.eol === '\r\n') t = t.replace(/\n/g, '\r\n');
+  return format.bom ? `\uFEFF${t}` : t;
 }
 
 // Names and paths go into API URLs, where fetch resolves '.' and '..' segments: a path
@@ -196,7 +248,10 @@ export class GitHub {
     };
   }
 
-  /** @returns {Promise<{text: string, sha: string}|null>} null when there is no such file */
+  /**
+   * @returns {Promise<{text: string, sha: string, format: FileFormat}|null>} null when there is
+   *   no such file; the text has LF line endings and no BOM, `format` says how to write it back
+   */
   async getFile(owner, name, path, ref) {
     let f;
     try {
@@ -209,9 +264,9 @@ export class GitHub {
     // Over 1 MB the contents API leaves `content` empty; the blob API has no such limit.
     if (f.encoding === 'none' || (!f.content && f.size > 0)) {
       const blob = await this.request('GET', `${repoUrl(owner, name)}/git/blobs/${f.sha}`);
-      return { text: decodeBase64(blob.content), sha: f.sha };
+      return { ...decodeFile(blob.content), sha: f.sha };
     }
-    return { text: decodeBase64(f.content || ''), sha: f.sha };
+    return { ...decodeFile(f.content || ''), sha: f.sha };
   }
 
   /** A file's bytes (for images in private repositories, which have no public URL). */
@@ -222,13 +277,14 @@ export class GitHub {
 
   /**
    * Creates or updates one file in one commit.
-   * @param {{text: string, message: string, branch: string, sha?: string|null}} f
+   * @param {{text: string, message: string, branch: string, sha?: string|null, format?: FileFormat}} f
    *   `sha` is the blob being replaced; omit it to create a new file. If someone else
    *   changed the file meanwhile, GitHub refuses with 409 rather than overwrite them.
+   *   `format`: the file's line endings and BOM, as getFile found them (see encodeFile).
    * @returns {Promise<{sha: string, commit: {sha: string, html_url: string}}>}
    */
-  async putFile(owner, name, path, { text, message, branch, sha }) {
-    const body = { message, content: encodeBase64(text), branch };
+  async putFile(owner, name, path, { text, message, branch, sha, format }) {
+    const body = { message, content: encodeBase64(encodeFile(text, format, path)), branch };
     if (sha) body.sha = sha;
     const r = await this.request('PUT', `${repoUrl(owner, name)}/contents/${enc(path)}`, { body });
     return { sha: r.content.sha, commit: { sha: r.commit.sha, html_url: r.commit.html_url } };
@@ -248,9 +304,11 @@ export class GitHub {
    *   { path, blobBase64 }   a file with these bytes (an image)
    *   { path, sha }          a file with a blob already in the repository (a move)
    *   { path, delete: true } no file here any more
-   * plus, optionally, `mode` (default the plain file mode) and `expect`: the blob sha the path
-   * must have at the head (null: there must be no file), so that a change someone else made
-   * meanwhile is refused (409) rather than overwritten, as putFile does with `sha`.
+   * plus, optionally, `mode` (default the plain file mode), `format` (with `text`: see
+   * encodeFile) and `expect`: the blob sha the path must have in the head's tree (null: there
+   * must be no file), so that a change someone else made meanwhile is refused (409) rather
+   * than overwritten, as putFile does with `sha`. The check reads the git tree, not the
+   * contents API, which answers for a symlink with its target's sha.
    *
    * The branch is moved without forcing it: if someone pushed while this was being prepared,
    * GitHub refuses and nothing is committed. Blobs and trees made on the way are left for
@@ -264,20 +322,25 @@ export class GitHub {
   async commitChanges(owner, name, branch, { message, changes, expectedHead }) {
     const R = `${repoUrl(owner, name)}/git`;
     if (!changes?.length) throw new Error('Nothing to commit.');
+    for (const c of changes) {
+      if (!isSafePath(c.path)) throw refuse('path in the repository', c.path);
+      if (c.text !== undefined) encodeFile(c.text, c.format, c.path); // refuses a file that was not UTF-8
+    }
     const ref = await this.request('GET', `${R}/ref/heads/${encBranch(branch)}`);
     const head = ref.object.sha;
     if (expectedHead && head !== expectedHead) throw moved(branch);
+    const base = await this.request('GET', `${R}/commits/${head}`);
+    const dirs = new Map(); // directory path -> its tree's entries, read as needed
     for (const c of changes) {
       if (c.expect === undefined) continue;
-      const now = await this.blobSha(owner, name, c.path, head);
+      const now = await this.#entrySha(R, base.tree.sha, c.path, dirs);
       if (now !== c.expect) {
         throw new GitHubError(409, c.expect === null
           ? `${c.path} already exists on GitHub.`
           : `${c.path} changed on GitHub since it was opened. Reload it (your text is kept as a draft) and commit again.`,
-        { path: c.path });
+        { path: c.path, conflict: true });
       }
     }
-    const base = await this.request('GET', `${R}/commits/${head}`);
     const tree = [];
     const blobs = {};
     for (const c of changes) {
@@ -285,7 +348,7 @@ export class GitHub {
       if (c.delete) entry.sha = null;
       else if (c.sha) entry.sha = c.sha;
       else {
-        const content = c.blobBase64 ?? encodeBase64(c.text);
+        const content = c.blobBase64 ?? encodeBase64(encodeFile(c.text, c.format, c.path));
         entry.sha = (await this.request('POST', `${R}/blobs`, { body: { content, encoding: 'base64' } })).sha;
       }
       if (entry.sha) blobs[c.path] = entry.sha;
@@ -296,11 +359,32 @@ export class GitHub {
     try {
       await this.request('PATCH', `${R}/refs/heads/${encBranch(branch)}`, { body: { sha: commit.sha, force: false } });
     } catch (e) {
-      // 422 "Update is not a fast forward": the branch moved after we read it
-      if (e.status === 422 || e.status === 409) throw moved(branch);
+      // 422 "Update is not a fast forward": the branch moved after we read it. Anything else
+      // (a protected branch, a ruleset, required checks) is GitHub's reason, explained.
+      if ((e.status === 422 || e.status === 409) && /fast.forward/i.test(e.body?.message || '')) throw moved(branch);
       throw e;
     }
     return { sha: commit.sha, html_url: commit.html_url, blobs };
+  }
+
+  /**
+   * The sha of what is at `path` in the tree `root` (a blob's, a symlink's own, 'dir' for a
+   * directory), or null; `dirs` keeps the trees read on the way.
+   */
+  async #entrySha(R, root, path, dirs) {
+    const parts = path.split('/');
+    let sha = root;
+    let dir = '';
+    for (let i = 0; i < parts.length; i++) {
+      if (!dirs.has(dir)) dirs.set(dir, (await this.request('GET', `${R}/trees/${encRef(sha)}`)).tree);
+      const e = dirs.get(dir).find((x) => x.path === parts[i]);
+      if (!e) return null;
+      if (i === parts.length - 1) return e.type === 'tree' ? 'dir' : e.sha;
+      if (e.type !== 'tree') return null;
+      sha = e.sha;
+      dir = dir ? `${dir}/${parts[i]}` : parts[i];
+    }
+    return null;
   }
 
   /** The blob sha of the file at `path` in `ref`, null if there is none ('dir' for a directory). */
@@ -315,10 +399,19 @@ export class GitHub {
     return Array.isArray(f) ? 'dir' : f.sha;
   }
 
-  /** A new branch starting where `from` (a branch name) is now. */
-  async createBranch(owner, name, branch, from) {
+  /**
+   * A new branch starting where `from` (a branch name) is now. `resume`: an earlier attempt
+   * created `branch` and then failed to commit to it (it holds nothing of the user's), so if
+   * it exists it is moved to where `from` is now rather than refused.
+   */
+  async createBranch(owner, name, branch, from, { resume = false } = {}) {
     const ref = await this.request('GET', `${repoUrl(owner, name)}/git/ref/heads/${encBranch(from)}`);
-    await this.createRef(owner, name, branch, ref.object.sha);
+    try {
+      await this.createRef(owner, name, branch, ref.object.sha);
+    } catch (e) {
+      if (!resume || e.status !== 422 || !/already exists/i.test(e.body?.message || '')) throw e;
+      await this.updateRef(owner, name, branch, ref.object.sha, true);
+    }
   }
 
   /** The commit a branch points at, or null when there is no such branch (yet). */
@@ -372,6 +465,35 @@ function moved(branch) {
   return new GitHubError(409, `Someone pushed to ${branch} while this was being committed, so GitHub refused it and nothing was committed. Try again.`, { moved: true });
 }
 
+/** GitHub's answers when a branch's protection or a ruleset refuses a commit (422, or 409). */
+const PROTECTED = /protected branch|rule violation|ruleset|status checks?\b|through a pull request|required (?:review|signature|linear)/i;
+
+/** A 409 that means the file is not the version it was opened at ("a.md does not match <sha>"). */
+const isShaConflict = (msg) => /does not match|but expected|\bsha\b/i.test(msg);
+
+/**
+ * A file list (tree().entries) brought up to date with a commit: each path in `blobs` (as
+ * commitChanges returns them, or {[path]: putFile's sha}) gets its new blob sha, and is added
+ * with its directories when it is new. Later renames and deletes check against these shas.
+ * @returns the same array, changed
+ */
+export function recordCommit(entries, blobs) {
+  for (const [path, sha] of Object.entries(blobs)) {
+    const e = entries.find((x) => x.type === 'file' && x.path === path);
+    if (e) {
+      e.sha = sha;
+      continue;
+    }
+    const parts = path.split('/');
+    for (let i = 1; i < parts.length; i++) {
+      const d = parts.slice(0, i).join('/');
+      if (!entries.some((x) => x.path === d)) entries.push({ path: d, type: 'dir' });
+    }
+    entries.push({ path, type: 'file', sha, mode: '100644' });
+  }
+  return entries;
+}
+
 function slimRepo(r) {
   return {
     owner: r.owner.login,
@@ -398,7 +520,16 @@ function explain(status, data, gh) {
   if (status === 403) return `Not allowed: ${msg}. The token may lack the "Contents: write" permission for this repository.`;
   if (status === 404 && gh.auth?.kind === 'app') return `Not found: ${msg}. For a private repository, install meditor on it first.`;
   if (status === 404) return gh.auth ? `Not found (or the token cannot see it): ${msg}` : `Not found: ${msg}. For a private repository, sign in first.`;
-  if (status === 409) return 'The file changed on GitHub since it was opened. Reload it (your text is kept as a draft) and commit again.';
+  if ((status === 409 || status === 422) && PROTECTED.test(msg)) {
+    if (data) data.protected = true;
+    const why = (data?.errors || []).map((e) => (typeof e === 'string' ? e : e?.message)).filter(Boolean).join(' ');
+    return `GitHub refused the commit because the branch is protected: ${msg.trim()}${why ? ` ${why}` : ''} Commit to a new branch and open a pull request instead.`;
+  }
+  if (status === 409 && isShaConflict(msg)) {
+    if (data) data.conflict = true;
+    return 'The file changed on GitHub since it was opened. Reload it (your text is kept as a draft) and commit again.';
+  }
+  if (status === 409) return `GitHub refused the change: ${msg}`;
   if (status === 422) return `GitHub refused the change: ${data?.errors?.[0]?.message || msg}`;
   return msg;
 }

@@ -2,7 +2,7 @@
 // The only module that touches the DOM.
 
 import { renderMarkdown, sanitizeHtml, escapeHtml, isExternalLink, ID_PREFIX } from './markdown.js';
-import { GitHub, MARKDOWN_EXT, bytesToBase64 } from './github.js';
+import { GitHub, MARKDOWN_EXT, bytesToBase64, recordCommit, encodeFile, PLAIN_FORMAT } from './github.js';
 import { Auth, AUTH_KEY, credentialStore, keepSignIn, signInReturn } from './auth.js';
 import { GITHUB_APP } from './config.js';
 import {
@@ -378,7 +378,9 @@ function openScratch() {
 function showFile(loc, file) {
   if (state.loc) saveDraftNow();
   state.loc = loc;
-  state.doc = file ? { base: file.text, sha: file.sha, isNew: false } : { base: '', sha: null, isNew: true };
+  // the text has LF line endings and no BOM, as the textarea will; `format` writes them back
+  state.doc = file ? { base: file.text, sha: file.sha, isNew: false, format: file.format }
+    : { base: '', sha: null, isNew: true, format: PLAIN_FORMAT };
   clearPending();
   rememberRecent(loc);
   // a new file starts with a heading, but is not a draft until the user types
@@ -395,10 +397,15 @@ function showFile(loc, file) {
       actions: [['restore my version', () => { drafts.resolve(); setText(draft.text, true); hideBanner(); }], ['discard it', () => discardDraft()]],
     };
   }
+  const notUtf8 = state.doc.format?.utf8 === false
+    ? `${loc.path} is not UTF-8 text (it may be Latin-1 or another old encoding): � marks the characters meditor cannot read, and it cannot be committed from here.`
+    : null;
+  if (!banner && notUtf8) banner = { text: notUtf8, actions: [] };
   showDoc();
   if (banner) showBanner(banner.text, banner.actions);
   else hideBanner();
   if (drafts.unstored) draftWarning();
+  else if (notUtf8) status(notUtf8, 'warn');
   else if (state.doc.isNew) status(`${loc.path} is new: it will be created when you commit it.`, 'warn');
   else status('');
   loadPending(loc, draft?.text);
@@ -1800,37 +1807,45 @@ async function doCommit() {
   err.hidden = true;
   $('commitGo').disabled = true;
   try {
+    // a file that was not UTF-8 is refused before anything (a branch, a fork) is made
+    encodeFile(text, state.doc.format, loc.path);
     if (target === 'fork') {
       await propose({ text, title, body, message });
       return;
     }
     let branch = loc.ref;
+    let made = null;
     if (pr) {
       branch = $('prBranch').value.trim();
       if (!branch) throw new Error('Name the new branch.');
-      await busy(`creating branch ${branch}`, () => state.gh.createBranch(loc.owner, loc.name, branch, loc.ref));
+      made = `${loc.owner}/${loc.name}@${loc.ref}:${branch}`;
+      const resume = prBranchMade === made;
+      await busy(`creating branch ${branch}`, () => state.gh.createBranch(loc.owner, loc.name, branch, loc.ref, { resume }));
+      prBranchMade = made;
     }
+    const format = state.doc.format;
     const imgs = imagesToCommit();
     let r;
     if (imgs.length) {
       // the document and its images in one commit; the document must still be as it was
       // opened (or still not exist), as putFile checks with `sha`
-      const changes = [{ path: loc.path, text, expect: state.doc.isNew ? null : state.doc.sha }];
+      const changes = [{ path: loc.path, text, format, expect: state.doc.isNew ? null : state.doc.sha }];
       for (const i of imgs) {
         changes.push({ path: i.path, blobBase64: bytesToBase64(new Uint8Array(await i.blob.arrayBuffer())), expect: null });
       }
       const c = await busy('committing', () => state.gh.commitChanges(loc.owner, loc.name, branch, { message, changes }));
-      r = { sha: c.blobs[loc.path], commit: { sha: c.sha, html_url: c.html_url } };
+      r = { sha: c.blobs[loc.path], commit: { sha: c.sha, html_url: c.html_url }, blobs: c.blobs };
     } else {
-      r = await busy('committing', () => state.gh.putFile(loc.owner, loc.name, loc.path, { text, message, branch, sha: state.doc.sha }));
+      r = await busy('committing', () => state.gh.putFile(loc.owner, loc.name, loc.path, { text, message, branch, sha: state.doc.sha, format }));
+      r.blobs = { [loc.path]: r.sha };
     }
+    if (made) prBranchMade = null;
     drafts.committed(draftKey(loc), text, r.sha);
     forgetImages(draftKey(loc));
     const committed = new Map(imgs.map((i) => [i.path, i]));
     for (const [path, p] of state.pending) if (!committed.has(path)) URL.revokeObjectURL(p.url);
     state.pending = new Map();
-    const wasNew = state.doc.isNew;
-    state.doc = { base: text, sha: r.sha, isNew: false };
+    state.doc = { base: text, sha: r.sha, isNew: false, format };
     $('commitDlg').close();
     hideBanner();
     let note = `Committed <a href="${escapeHtml(r.commit.html_url)}" target="_blank" rel="noopener">${r.commit.sha.slice(0, 7)}</a> to ${escapeHtml(branch)}.`;
@@ -1851,9 +1866,9 @@ async function doCommit() {
       history.pushState(null, '', formatFragment(next));
       state.tree = { ...(await state.gh.tree(loc.owner, loc.name, branch)), ref: branch };
       renderBranches();
-    } else if (state.tree) {
-      if (wasNew) state.tree.entries.push({ path: loc.path, type: 'file', sha: r.sha });
-      for (const path of committed.keys()) state.tree.entries.push({ path, type: 'file' });
+    } else if (state.tree?.ref === branch) {
+      // the file list's shas are those a rename or delete checks against
+      recordCommit(state.tree.entries, r.blobs);
     }
     // the images are in the repository now; a private one's are shown from what we have
     for (const [path, i] of committed) {
@@ -1878,11 +1893,22 @@ async function doCommit() {
       a.textContent = `${label} ↗`;
       err.append(' ', a);
     }
-    if (e.status === 409 && (e.body?.path || loc.path) === loc.path && !e.body?.moved) {
+    // the file is not the version it was opened at (not a protected branch, nor a moved one)
+    if (e.status === 409 && e.body?.conflict && (e.body.path || loc.path) === loc.path) {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.textContent = 'load the latest version';
       btn.addEventListener('click', reloadKeepingText);
+      err.append(' ', btn);
+    }
+    if (e.body?.protected && target === 'direct' && state.repo?.canPush) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = 'commit to a new branch instead';
+      btn.addEventListener('click', () => {
+        document.querySelector('input[name="target"][value="pr"]').checked = true;
+        $('prBranch').focus();
+      });
       err.append(' ', btn);
     }
   } finally {
@@ -1893,6 +1919,8 @@ async function doCommit() {
 // The branch a "fork and propose" created in the fork before failing later on (say, the
 // file had changed upstream): trying again with the same name takes that branch over.
 let forkBranchMade = null;
+// The same for "commit to a new branch": the branch it created before the commit failed.
+let prBranchMade = null;
 
 /**
  * Forks the open repository (or finds the user's fork), commits there, and opens a pull
@@ -1910,7 +1938,7 @@ async function propose({ text, title, body, message }) {
   for (const i of imgs) images.push({ path: i.path, blobBase64: bytesToBase64(new Uint8Array(await i.blob.arrayBuffer())) });
   const r = await busy('proposing the change', () => proposeChange(state.gh, {
     upstream: loc, login: state.user.login, branch, text, message, sha: state.doc.sha, title, body,
-    installUrl: installUrl(), resume: forkBranchMade === key, images,
+    installUrl: installUrl(), resume: forkBranchMade === key, images, format: state.doc.format,
   }, {
     progress: (t) => { shown.textContent = `${t}…`; shown.hidden = false; },
     created: () => { forkBranchMade = key; },
@@ -1927,7 +1955,7 @@ async function propose({ text, title, body, message }) {
     if (r.fork.private && !state.images.has(k)) state.images.set(k, i.url);
     else URL.revokeObjectURL(i.url);
   }
-  state.doc = { base: text, sha: r.sha, isNew: false };
+  state.doc = { base: text, sha: r.sha, isNew: false, format: state.doc.format };
   $('commitDlg').close();
   hideBanner();
   const link = (url, label) => `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(label)}</a>`;
@@ -1956,7 +1984,8 @@ async function reloadKeepingText() {
   const loc = state.loc;
   const f = await busy('loading the latest version', () => state.gh.getFile(loc.owner, loc.name, loc.path, loc.ref));
   if (!f) return;
-  state.doc = { base: f.text, sha: f.sha, isNew: false };
+  state.doc = { base: f.text, sha: f.sha, isNew: false, format: f.format };
+  if (state.tree?.ref === loc.ref) recordCommit(state.tree.entries, { [loc.path]: f.sha });
   drafts.rebase(f.text, f.sha);
   saveDraftNow();
   updateDirty();
@@ -2074,7 +2103,10 @@ async function doFileAction() {
         () => state.gh.commitChanges(repo.owner, repo.name, ref, { message, changes }));
     }
   } catch (e) {
-    err.textContent = e.message;
+    // renames and deletes go straight to the branch: there is no pull request to offer here
+    err.textContent = e.body?.protected
+      ? `GitHub refused to change ${ref}, a protected branch: ${String(e.body.message).trim().replace(/\.$/, '')}. Rename or delete the file through a pull request on GitHub instead.`
+      : e.message;
     err.hidden = false;
     $('fileGo').disabled = false;
     return;
