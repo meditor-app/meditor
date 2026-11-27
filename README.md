@@ -23,6 +23,10 @@ browser. The only server-side piece is a tiny relay that completes *Sign in with
   links between documents of the repository open in the editor, and images from the
   repository show, private ones included. Tick a task box in the rendered page and the
   `[ ]` in the source ticks with it.
+  - **Paste or drop an image** into the source: it goes next to the document
+    (`images/<document>-1.png`, or the dropped file's own name), its link goes in at the
+    cursor, and it is committed with the document, in the same commit. Until then it is
+    kept with the draft in this browser; delete the link and it is left out.
   - `Ctrl+B` bold, `Ctrl+I` italic, `Ctrl+E` code, `Ctrl+K` link, `Ctrl+1/2/3` headings
   - `Enter` continues a list or a quote (on an empty item it ends the list);
     `Tab` / `Shift+Tab` indent and outdent

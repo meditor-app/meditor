@@ -18,6 +18,7 @@ const SHELL = [
   'src/links.js',
   'src/edit.js',
   'src/diff.js',
+  'src/images.js',
   'icons/icon.svg',
   'icons/icon-192.png',
 ];
