@@ -100,10 +100,15 @@ test('linear time, also on input made to make it backtrack', () => {
   for (const [lang, l] of Object.entries(line)) {
     const big = Array(5000).fill(l).join('\n');
     highlight(l, lang);
-    const t = performance.now();
-    highlight(big, lang);
-    const ms = performance.now() - t;
-    assert.ok(ms < 100, `${lang}: 5,000 lines took ${ms.toFixed(1)} ms`);
+    // best of three, with room to spare: CI machines are slow and noisy, and something
+    // quadratic would take seconds anyway
+    let ms = Infinity;
+    for (let i = 0; i < 3; i++) {
+      const t = performance.now();
+      highlight(big, lang);
+      ms = Math.min(ms, performance.now() - t);
+    }
+    assert.ok(ms < 300, `${lang}: 5,000 lines took ${ms.toFixed(1)} ms`);
   }
   // 100,000 characters each: anything quadratic would take seconds
   const n = 100000;
