@@ -61,3 +61,19 @@ test('serves only the allowed pages, and only POST', async () => {
   assert.equal((await handle(req('/token', {}), ENV)).status, 400);
   assert.equal((await handle(req('/token', { code: 'c' }), { ...ENV, GITHUB_CLIENT_SECRET: '' })).status, 500);
 });
+
+test('tells GitHub saying no (400) from GitHub being unavailable (502)', async () => {
+  const answers = [
+    [() => new Response('<html>Unicorn!</html>', { status: 503 }), 502],
+    [() => new Response(JSON.stringify({ message: 'Server Error' }), { status: 500 }), 502],
+    [() => new Response('not json', { status: 200 }), 502],
+    [() => { throw new TypeError('network'); }, 502],
+    [() => new Response(JSON.stringify({ error: 'bad_refresh_token' }), { status: 200 }), 400],
+  ];
+  for (const [answer, status] of answers) {
+    globalThis.fetch = async () => answer();
+    const res = await handle(req('/refresh', { refresh_token: 'r' }), ENV);
+    assert.equal(res.status, status);
+    assert.equal(typeof (await res.json()).error, 'string');
+  }
+});
