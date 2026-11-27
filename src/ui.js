@@ -1220,7 +1220,15 @@ async function renderPreview(now = false) {
     return;
   }
   $('renderNote').textContent = '';
-  out.innerHTML = renderMarkdown(text, { resolveImage, resolveLink });
+  let html;
+  try {
+    html = renderMarkdown(text, { resolveImage, resolveLink });
+  } catch (e) {
+    // a renderer bug must not leave a stale preview looking current
+    status(`meditor could not render this: ${e.message}`, 'warn');
+    return;
+  }
+  out.innerHTML = html;
   out.dataset.rendered = text;
   for (const box of out.querySelectorAll('input.task-list-item-checkbox[data-line]')) box.disabled = false;
   for (const img of out.querySelectorAll('img')) img.addEventListener('error', () => img.classList.add('missing'), { once: true });
@@ -1360,7 +1368,10 @@ function blocks() {
   const root = $('preview');
   const scroller = $('previewScroll');
   const base = scroller.getBoundingClientRect().top - scroller.scrollTop;
-  previewBlocks = [...root.querySelectorAll(':scope > [data-line], :scope > ul > li[data-line], :scope > ol > li[data-line]')]
+  // Top-level blocks and list items: only they carry data-line (checkboxes aside). Some sit
+  // inside a raw HTML element (<div align="center">), and some are hidden (a closed <details>).
+  previewBlocks = [...root.querySelectorAll('[data-line]:not(input)')]
+    .filter((el) => el.getClientRects().length)
     .map((el) => ({ line: +el.dataset.line, top: el.getBoundingClientRect().top - base }))
     .sort((a, b) => a.line - b.line || a.top - b.top);
   return previewBlocks;
