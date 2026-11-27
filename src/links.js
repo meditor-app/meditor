@@ -102,3 +102,30 @@ export function rawUrl(loc, path) {
   const p = path.split('/').map(encodeURIComponent).join('/');
   return `https://raw.githubusercontent.com/${loc.owner}/${loc.name}/${encodeURIComponent(loc.ref).replace(/%2F/g, '/')}/${p}`;
 }
+
+// ---------------------------------------------------------------- recent files
+
+const recentKey = (l) => `${l.owner}/${l.name}@${l.ref}:${l.path}`.toLowerCase();
+
+/** The recent-files list with `loc` (opened at time `at`) moved to the front. */
+export function addRecent(list, loc, at, max = 20) {
+  const k = recentKey(loc);
+  const entry = { owner: loc.owner, name: loc.name, ref: loc.ref, path: loc.path, at };
+  return [entry, ...(Array.isArray(list) ? list : []).filter((r) => r && r.path && recentKey(r) !== k)].slice(0, max);
+}
+
+export function removeRecent(list, loc) {
+  const k = recentKey(loc);
+  return list.filter((r) => recentKey(r) !== k);
+}
+
+/** "just now", "5 min ago", "3 h ago", "yesterday", "4 days ago", or a date. */
+export function ago(at, now) {
+  const s = Math.max(0, (now - at) / 1000);
+  if (s < 60) return 'just now';
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
+  if (s < 2 * 86400) return 'yesterday';
+  if (s < 30 * 86400) return `${Math.floor(s / 86400)} days ago`;
+  return new Date(at).toISOString().slice(0, 10);
+}

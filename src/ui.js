@@ -7,7 +7,7 @@ import { Auth, AuthError } from './auth.js';
 import { GITHUB_APP } from './config.js';
 import {
   parseFragment, formatFragment, parseGitHubUrl, splitRefPath, resolveRef, githubUrl, rawUrl,
-  dirname, basename, joinPath,
+  dirname, basename, joinPath, addRecent, removeRecent, ago,
 } from './links.js';
 import {
   wrap, togglePrefix, orderedList, taskList, heading, link, codeBlock, table, rule, indent,
@@ -23,6 +23,7 @@ const K = {
   draft: 'meditor:draft:',
   panels: 'meditor:panels',
   prefs: 'meditor:prefs',
+  recent: 'meditor:recent',
 };
 const PIXEL = 'data:image/gif;base64,R0lGODlhAQABAAAAACw=';
 
@@ -344,6 +345,7 @@ async function openFile(loc) {
   }
   state.loc = loc;
   state.doc = file ? { base: file.text, sha: file.sha, isNew: false } : { base: '', sha: null, isNew: true };
+  rememberRecent(loc);
   const draft = store.get(draftKey(loc));
   let banner = null;
   if (draft && draft.text !== state.doc.base) {
@@ -772,6 +774,7 @@ function syncFrom(which) {
 // ---------------------------------------------------------------- the file tree
 
 function renderTree() {
+  renderRecent();
   const repo = state.repo;
   $('filesEmpty').hidden = !!repo;
   $('fileTools').hidden = !repo;
@@ -898,6 +901,61 @@ function renderBranches() {
   sel.value = ref || '';
 }
 
+// ---------------------------------------------------------------- recent files
+//
+// The files opened lately, newest first, kept in this browser (local storage, like the
+// drafts: nothing about them is sent anywhere).
+
+function rememberRecent(loc) {
+  store.set(K.recent, addRecent(store.get(K.recent, []), loc, Date.now()));
+  renderRecent();
+}
+
+function renderRecent() {
+  const list = store.get(K.recent, []);
+  const now = Date.now();
+  const cur = state.loc;
+  const same = (r) => cur && r.owner === cur.owner && r.name === cur.name && r.ref === cur.ref && r.path === cur.path;
+  for (const ul of document.querySelectorAll('[data-recent]')) {
+    ul.replaceChildren(...list.map((r) => {
+      const li = document.createElement('li');
+      const open = document.createElement('button');
+      open.type = 'button';
+      open.className = 'open' + (same(r) ? ' current' : '');
+      open.dataset.loc = JSON.stringify(r);
+      open.title = `${r.owner}/${r.name} @ ${r.ref} : ${r.path}`;
+      const dir = dirname(r.path);
+      open.innerHTML = `<span class="nm">${escapeHtml(basename(r.path))}</span>`
+        + `<span class="where">${escapeHtml(`${r.owner}/${r.name}${dir ? '/' + dir : ''} @ ${r.ref}`)} · ${escapeHtml(ago(r.at, now))}</span>`;
+      const forget = document.createElement('button');
+      forget.type = 'button';
+      forget.className = 'forget';
+      forget.dataset.forget = JSON.stringify(r);
+      forget.title = 'remove from the recent files';
+      forget.setAttribute('aria-label', 'remove from the recent files');
+      forget.textContent = '×';
+      li.append(open, forget);
+      return li;
+    }));
+  }
+  for (const w of document.querySelectorAll('.recentwrap')) w.hidden = !list.length;
+  $('recentBox').hidden = !list.length || !state.repo;
+}
+
+function onRecentClick(e) {
+  const f = e.target.closest('button[data-forget]');
+  if (f) {
+    store.set(K.recent, removeRecent(store.get(K.recent, []), JSON.parse(f.dataset.forget)));
+    renderRecent();
+    return;
+  }
+  const b = e.target.closest('button[data-loc]');
+  if (!b) return;
+  const dlg = b.closest('dialog');
+  if (dlg) dlg.close();
+  go(JSON.parse(b.dataset.loc));
+}
+
 // ---------------------------------------------------------------- repositories
 
 async function openRepoDialog() {
@@ -908,6 +966,7 @@ async function openRepoDialog() {
   $('repoListBox').hidden = !state.user;
   $('repoInstall').hidden = auth.kind !== 'app';
   $('repoInstallLink').href = installUrl();
+  renderRecent();
   dlg.showModal();
   $('repoUrl').focus();
   if (state.user && !state.repos) {
@@ -1046,6 +1105,7 @@ async function doCommit() {
       state.branches.push({ name: branch, sha: r.commit.sha });
       const next = { ...loc, ref: branch };
       state.loc = next;
+      rememberRecent(next);
       history.pushState(null, '', formatFragment(next));
       state.tree = { ...(await state.gh.tree(loc.owner, loc.name, branch)), ref: branch };
       renderBranches();
@@ -1344,6 +1404,7 @@ export async function boot() {
 
   // repositories
   $('repoFilter').addEventListener('input', renderRepoList);
+  for (const ul of document.querySelectorAll('[data-recent]')) ul.addEventListener('click', onRecentClick);
   $('repoList').addEventListener('click', (e) => {
     const b = e.target.closest('button[data-repo]');
     if (!b) return;

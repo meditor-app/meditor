@@ -287,6 +287,27 @@ a.minor:hover { color: var(--accent); }
 
 .previewscroll { flex: 1 1 auto; overflow: auto; }
 
+/* recent files: in the file panel and the "open" dialog */
+.recentbox { border-bottom: 1px solid var(--rule-soft); padding: 4px 6px; font-size: 12.5px; }
+.recentbox summary { cursor: pointer; color: var(--ink-soft); padding: 2px 4px; }
+.recentbox .recent { max-height: 30vh; overflow: auto; }
+.files .empty h3 { margin: 14px 0 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-faint); }
+.recent { list-style: none; margin: 0; padding: 0; }
+.recent li { display: flex; align-items: center; }
+.recent .open {
+  flex: 1 1 auto; min-width: 0; border: none; background: none; border-radius: 5px;
+  display: flex; flex-direction: column; align-items: flex-start; gap: 0; padding: 3px 6px; text-align: left;
+}
+.recent .open:hover { background: var(--plate); }
+.recent .open.current { background: var(--accent-soft); }
+.recent .nm { font-weight: 600; color: var(--ink); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recent .where { font-size: 11px; color: var(--ink-faint); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recent .forget { border: none; background: none; min-height: 0; padding: 2px 6px; color: var(--ink-faint); opacity: 0; }
+.recent li:hover .forget, .recent .forget:focus-visible { opacity: 1; }
+.recent .forget:hover { color: var(--bad); }
+.recent.boxed { border: 1px solid var(--rule-soft); border-radius: 8px; background: var(--plate); max-height: 32vh; overflow: auto; padding: 2px; margin-top: 4px; }
+.recent.boxed .open:hover { background: var(--accent-soft); }
+
 /* ---- status bar ---------------------------------------------------------- */
 
 .statusbar { display: flex; align-items: center; gap: 10px; min-height: 20px; padding: 0 4px; font-size: 12px; color: var(--ink-soft); }

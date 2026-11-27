@@ -76,6 +76,10 @@
           <button id="refresh" type="button" title="reload the file list from GitHub">↻</button>
         </div>
       </div>
+      <details id="recentBox" class="recentbox" hidden>
+        <summary>recent files</summary>
+        <ul class="recent" data-recent></ul>
+      </details>
       <div id="tree" class="tree" role="tree"></div>
       <div id="filesEmpty" class="empty">
         <h2>No repository open</h2>
@@ -83,6 +87,10 @@
         <p><button id="openRepo2" type="button">open a repository…</button></p>
         <p class="help">Public repositories open without signing in. To see private ones and to
           commit, <a href="#" id="signin2">sign in</a> to GitHub.</p>
+        <div class="recentwrap" hidden>
+          <h3>Recent files</h3>
+          <ul class="recent" data-recent></ul>
+        </div>
         <p class="help"><label class="button linklike">open a local file<input type="file" id="localFile" accept=".md,.markdown,.mdx,.txt,text/markdown,text/plain" hidden></label></p>
       </div>
     </aside>
@@ -167,7 +175,11 @@
 <dialog id="repoDlg" class="dlg wide">
   <form method="dialog" id="repoForm">
     <h2>Open a repository</h2>
-    <label class="field">a GitHub URL or <code>owner/name</code> — a link to a file opens that file
+    <div class="recentwrap" hidden>
+      <span class="field">recent files</span>
+      <ul class="recent boxed" data-recent></ul>
+    </div>
+    <label class="field"><span>or a GitHub URL or <code>owner/name</code> — a link to a file opens that file</span>
       <span class="row">
         <input id="repoUrl" type="text" autocomplete="off" spellcheck="false" placeholder="https://github.com/owner/name/blob/main/README.md">
         <button id="repoUrlGo" class="primary">open</button>
@@ -195,7 +207,7 @@
     <label class="field">commit message
       <input id="commitMsg" type="text" autocomplete="off" required>
     </label>
-    <label class="field">extended description <span class="help">(optional)</span>
+    <label class="field"><span>extended description <span class="help">(optional)</span></span>
       <textarea id="commitBody" rows="3"></textarea>
     </label>
     <fieldset class="choice">

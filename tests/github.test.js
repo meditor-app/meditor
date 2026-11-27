@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { GitHub, encodeBase64, decodeBase64 } from '../src/github.js';
 import {
   parseFragment, formatFragment, parseGitHubUrl, splitRefPath, resolveRef, joinPath, githubUrl,
+  addRecent, removeRecent, ago,
 } from '../src/links.js';
 
 function fake(routes) {
@@ -94,4 +95,20 @@ test('relative references resolve against the document', () => {
   assert.equal(joinPath('a/b', './c/../d.md'), 'a/b/d.md');
   assert.equal(joinPath('a/b', '../d.md'), 'a/d.md');
   assert.equal(githubUrl(loc, 'docs/a b.md'), 'https://github.com/o/r/blob/main/docs/a%20b.md');
+});
+
+test('recent files: newest first, no duplicates, capped', () => {
+  const a = { owner: 'o', name: 'r', ref: 'main', path: 'a.md' };
+  const b = { owner: 'o', name: 'r', ref: 'main', path: 'b.md' };
+  let l = addRecent([], a, 1);
+  l = addRecent(l, b, 2);
+  l = addRecent(l, { ...a, path: 'A.md' }, 3); // same file, different case
+  assert.deepEqual(l.map((r) => [r.path, r.at]), [['A.md', 3], ['b.md', 2]]);
+  assert.deepEqual(removeRecent(l, b).map((r) => r.path), ['A.md']);
+  for (let i = 0; i < 30; i++) l = addRecent(l, { ...a, path: `${i}.md` }, i);
+  assert.equal(l.length, 20);
+  assert.deepEqual(addRecent('garbage', a, 1).length, 1);
+  assert.equal(ago(0, 30e3), 'just now');
+  assert.equal(ago(0, 5 * 60e3), '5 min ago');
+  assert.equal(ago(0, 30 * 3600e3), 'yesterday');
 });
