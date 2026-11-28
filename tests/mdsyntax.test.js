@@ -42,8 +42,10 @@ test('emphasis, strong, strikethrough, escapes', () => {
 test('code spans and fenced blocks', () => {
   assert.deepEqual(one('use `x` or ``a ` b``'), ['code:`x`', 'code:``a ` b``']);
   assert.deepEqual(one('unclosed `x'), []);
-  assert.deepEqual(tok('```js\nlet *a* = 1\n```\n*b*'), [
-    ['fence:```js'], ['code:let *a* = 1'], ['fence:```'], ['mk:*', 'em:b', 'mk:*']]);
+  assert.deepEqual(tok('```\nlet *a* = 1\n```\n*b*'), [
+    ['fence:```'], ['code:let *a* = 1'], ['fence:```'], ['mk:*', 'em:b', 'mk:*']]);
+  // in a language highlight.js knows: its colours (see below)
+  assert.deepEqual(tok('```js\nlet *a* = 1\n```')[1], ['pl-k:let', 'pl-c1:1']);
   // a shorter fence does not close a longer one; a tilde one does not close backticks
   assert.deepEqual(tok('````\n```\n~~~~\n````').map((l) => l[0]), ['fence:````', 'code:```', 'code:~~~~', 'fence:````']);
   // a fence in a quote ends with the quote
@@ -59,8 +61,8 @@ test('a fence indented 4 columns or more is one only in a list item', () => {
   assert.deepEqual(tok('\t```\n*b*')[1], ['mk:*', 'em:b', 'mk:*']);
   assert.deepEqual(tok('   ```\nb\n   ```\nc'), [['fence:   ```'], ['code:b'], ['fence:   ```'], []]);
   // as GitHub renders it: the fence belongs to the item
-  assert.deepEqual(tok('- item\n\n    ```js\n    x\n    ```\n*y*'),
-    [['li:-'], [], ['fence:    ```js'], ['code:    x'], ['fence:    ```'], ['mk:*', 'em:y', 'mk:*']]);
+  assert.deepEqual(tok('- item\n\n    ```text\n    x\n    ```\n*y*'),
+    [['li:-'], [], ['fence:    ```text'], ['code:    x'], ['fence:    ```'], ['mk:*', 'em:y', 'mk:*']]);
   assert.deepEqual(tok('1. a\n   lazy\n\n      ```\n      x')[4], ['code:      x']);
   // inside a top-level block, an indented fence does not close it
   assert.deepEqual(tok('```\n    ```\nb\n```'), [['fence:```'], ['code:    ```'], ['code:b'], ['fence:```']]);

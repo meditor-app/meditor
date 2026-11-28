@@ -7,13 +7,21 @@
 // page re-tokenizes only the lines an edit touched and the few after it whose state
 // changed. A line also looks at the next one, for setext headings (text over === or ---).
 //
+// The code in a fenced block is coloured by highlight.js, in the language its info string
+// names, the code's own state carried in the fence's (a block comment opened in it goes on).
+// syntaxFor gives the same interface for any other file: the code tokenizer of its language.
+//
 // It only ever colours: the layer it feeds lies exactly under the textarea's own
 // (transparent) text, so nothing here may change the width of a character.
 
+import { tokenizeCode, languageOf, CODE_START } from './highlight.js';
+
 /**
  * @typedef {{first: boolean, fence: string, fq: boolean, front: boolean, comment: boolean, para: boolean,
- *   list: number[], lq: number}} LineState  list: the content columns of the list items the
- *   line may be in, outermost first (never changed in place); lq: how many quotes they are in
+ *   list: number[], lq: number, lang: string, inner: string}} LineState  list: the content
+ *   columns of the list items the line may be in, outermost first (never changed in place);
+ *   lq: how many quotes they are in; lang: the language of the fenced block the line is in
+ *   ('' when unknown), inner: the state of its code (highlight.js)
  * @typedef {[number, number, string]} Token  [from, to, classes] within the line
  */
 
@@ -21,10 +29,18 @@
 export const LONG_LINE = 5000;
 
 /** The state before the first line. */
-export const START = Object.freeze({ first: true, fence: '', fq: false, front: false, comment: false, para: false, list: Object.freeze([]), lq: 0 });
+export const START = Object.freeze({
+  first: true, fence: '', fq: false, front: false, comment: false, para: false, list: Object.freeze([]), lq: 0, lang: '', inner: '',
+});
 
 /** Two states that tokenize the following lines alike compare equal by this. */
-export const stateKey = (s) => `${+s.first}${s.fence}|${+s.fq}${+s.front}${+s.comment}${+s.para}${s.list.join(',')}>${s.lq}`;
+export const stateKey = (s) => `${+s.first}${s.fence}|${+s.fq}${+s.front}${+s.comment}${+s.para}${s.list.join(',')}>${s.lq}|${s.lang}\u0000${s.inner}`;
+
+/** The language of a fence's info string (` ```js title="x"`, ` ```{.python}`), or ''. */
+function fenceLanguage(info) {
+  const m = info.trim().match(/^\{?\.?([\w+#.-]+)/);
+  return (m && languageOf(m[1])) || '';
+}
 
 const RE = {
   front: /^---[ \t]*$/,
@@ -75,13 +91,20 @@ export function tokenizeLine(line, state = START, next = undefined) {
       if (f && f[2][0] === state.fence[0] && f[2].length >= state.fence.length
         && fenceIndent(f[1], state, q ? quoteDepth(q[0]) : 0)) {
         out.push([at, len, 'fence']);
-        return { tokens: out, state: { ...st, fence: '', fq: false } };
+        return { tokens: out, state: { ...st, fence: '', fq: false, lang: '', inner: '' } };
       }
-      if (len > at) out.push([at, len, 'code']);
+      if (state.lang) {
+        // code in a language: its own colours, its state carried to the next line
+        const r = tokenizeCode(at ? line.slice(at) : line, state.lang, state.inner);
+        st.inner = r.state;
+        if (len <= LONG_LINE) for (const [a, b, c] of r.tokens) out.push([a + at, b + at, c]);
+      } else if (len > at) out.push([at, len, 'code']);
       return { tokens: out, state: st };
     }
     st.fence = '';
     st.fq = false;
+    st.lang = '';
+    st.inner = '';
   }
 
   // an HTML comment left open on an earlier line
@@ -139,6 +162,8 @@ export function tokenizeLine(line, state = START, next = undefined) {
     out.push([at, len, 'fence']);
     st.fence = m[2];
     st.fq = quoted;
+    st.lang = fenceLanguage(m[3]);
+    st.inner = CODE_START;
   } else if (from === 0 && (m = body.match(RE.atx))) {
     const markEnd = at + m[0].length;
     out.push([at + m[1].length, markEnd, 'hd mk']);
@@ -195,12 +220,12 @@ export function tokenizeLine(line, state = START, next = undefined) {
  * @returns {{tokens: Token[][], states: LineState[]}} states[i] is the state line i starts
  *   in, and states[lines.length] the one after the last
  */
-export function tokenizeAll(lines) {
-  let st = START;
+export function tokenizeAll(lines, syntax = MARKDOWN) {
+  let st = syntax.start;
   const states = [st];
   const tokens = [];
   for (let i = 0; i < lines.length; i++) {
-    const r = tokenizeLine(lines[i], st, lines[i + 1]);
+    const r = syntax.line(lines[i], st, lines[i + 1]);
     tokens.push(r.tokens);
     states.push((st = r.state));
   }
@@ -215,9 +240,9 @@ export function tokenizeAll(lines) {
  * before: from there on nothing changes. Gives up, returning -1, when that is more than
  * `limit` lines past the edit (a code fence opened above the rest of the document); the
  * caller then tokenizes everything. Otherwise returns the end of the lines tokenized again,
- * which start at max(0, a - 1).
+ * which start at max(0, a - 1). `syntax`: the tokenizer (MARKDOWN, or syntaxFor's).
  */
-export function retokenize(lines, tokens, states, a, oldEnd, newEnd, limit = Infinity) {
+export function retokenize(lines, tokens, states, a, oldEnd, newEnd, limit = Infinity, syntax = MARKDOWN) {
   // shift the states after the edit to their new places, the lines in it unknown: from
   // newEnd on, each is what its line started in before (the stop condition), except that
   // when lines were only deleted, newEnd is a, whose state is still that of the line above:
@@ -236,15 +261,48 @@ export function retokenize(lines, tokens, states, a, oldEnd, newEnd, limit = Inf
   const n = lines.length;
   while (i < n) {
     if (i > newEnd + limit) return -1;
-    const r = tokenizeLine(lines[i], st, lines[i + 1]);
+    const r = syntax.line(lines[i], st, lines[i + 1]);
     tokens[i] = r.tokens;
     st = r.state;
     i++;
     const was = i === newEnd ? boundary : states[i];
     states[i] = st;
-    if (i >= newEnd && stateKey(was) === stateKey(st)) break;
+    if (i >= newEnd && syntax.key(was) === syntax.key(st)) break;
   }
   return i;
+}
+
+/**
+ * @typedef {{start: any, line(line: string, state: any, next?: string): {tokens: Token[], state: any},
+ *   key(state: any): string}} Syntax  how the source panel colours a kind of file
+ */
+
+/** @type {Syntax} Markdown */
+export const MARKDOWN = Object.freeze({ start: START, line: tokenizeLine, key: stateKey });
+
+const CODE = new Map();
+
+/**
+ * The tokenizer for a file in `lang` ('markdown', or a name highlight.js's languageOf gives),
+ * or null when there is none (plain text). The same object for the same language, so that
+ * the page can tell when it changes.
+ * @returns {Syntax|null}
+ */
+export function syntaxFor(lang) {
+  if (lang === 'markdown') return MARKDOWN;
+  if (!lang) return null;
+  if (!CODE.has(lang)) {
+    CODE.set(lang, Object.freeze({
+      start: CODE_START,
+      line(line, state) {
+        const r = tokenizeCode(line, lang, state);
+        // a very long line (minified code) stays plain, as in Markdown, but its state counts
+        return line.length > LONG_LINE ? { tokens: [], state: r.state } : r;
+      },
+      key: (s) => s,
+    }));
+  }
+  return CODE.get(lang);
 }
 
 /** The column after `s` (spaces and tabs, tab stops every 4), starting at column `col`. */

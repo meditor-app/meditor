@@ -16,7 +16,8 @@ const escaped = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>
 test('languages and their aliases', () => {
   for (const [alias, name] of [['js', 'js'], ['JavaScript', 'js'], ['tsx', 'ts'], ['py', 'python'], ['zsh', 'shell'],
     ['bash', 'shell'], ['yml', 'yaml'], ['c++', 'cpp'], ['h', 'c'], ['rs', 'rust'], ['golang', 'go'], ['xml', 'html'],
-    ['patch', 'diff'], ['jsonc', 'json'], ['scss', 'css']]) assert.equal(languageOf(alias), name, alias);
+    ['patch', 'diff'], ['jsonc', 'json'], ['scss', 'scss'], ['less', 'scss'], ['css', 'css'], ['kt', 'kotlin'],
+    ['cs', 'csharp'], ['rb', 'ruby'], ['toml', 'toml'], ['svg', 'html'], ['mk', 'make'], ['dockerfile', 'dockerfile']]) assert.equal(languageOf(alias), name, alias);
   assert.equal(languageOf('klingon'), null);
   assert.equal(highlight('if x', 'klingon'), null);
   assert.equal(languageOf('constructor'), null);
@@ -25,7 +26,7 @@ test('languages and their aliases', () => {
 test('JavaScript and TypeScript', () => {
   const js = 'import x from "y";\n// note\nconst a = `t ${b}` + 0x1f; /* c\n */ function go(n) { return n ?? null; }';
   has(js, 'js', ['pl-k', 'import'], ['pl-s', '&quot;y&quot;'], ['pl-c', '// note'], ['pl-k', 'const'],
-    ['pl-s', '`t ${b}`'], ['pl-c1', '0x1f'], ['pl-c', '/* c\n */'], ['pl-en', 'go'], ['pl-k', 'return'], ['pl-c1', 'null']);
+    ['pl-s', '`t ${b}`'], ['pl-c1', '0x1f'], ['pl-c', '/* c'], ['pl-c', ' */'], ['pl-en', 'go'], ['pl-k', 'return'], ['pl-c1', 'null']);
   has('interface P { x: number }\n@Component\nclass C implements P {}', 'ts',
     ['pl-k', 'interface'], ['pl-en', 'P'], ['pl-k', 'number'], ['pl-en', '@Component'], ['pl-en', 'C'], ['pl-k', 'implements']);
   // a name that merely contains a keyword is no keyword
@@ -35,7 +36,7 @@ test('JavaScript and TypeScript', () => {
 test('Python', () => {
   has('@cache\ndef f(x=1.5e-3):  # why\n    return f"{x}" if x is not None else b\'\'\n"""doc\nstring"""', 'py',
     ['pl-en', '@cache'], ['pl-k', 'def'], ['pl-en', 'f'], ['pl-c1', '1.5e-3'], ['pl-c', '# why'], ['pl-s', 'f&quot;{x}&quot;'],
-    ['pl-k', 'is'], ['pl-k', 'not'], ['pl-c1', 'None'], ['pl-s', "b''"], ['pl-s', '&quot;&quot;&quot;doc\nstring&quot;&quot;&quot;']);
+    ['pl-k', 'is'], ['pl-k', 'not'], ['pl-c1', 'None'], ['pl-s', "b''"], ['pl-s', '&quot;&quot;&quot;doc'], ['pl-s', 'string&quot;&quot;&quot;']);
 });
 
 test('shell', () => {
@@ -68,7 +69,7 @@ test('C, C++, Java, Rust and Go', () => {
   has("fn f<'a>(s: &'a str) -> Option<u8> { let c = '\\n'; println!(\"{}\", s); None }", 'rust',
     ['pl-k', 'fn'], ['pl-en', 'f'], ['pl-k', "'a"], ['pl-k', 'str'], ['pl-s', "'\\n'"], ['pl-en', 'println!'], ['pl-c1', 'None']);
   has('func (s *S) Run() error { return fmt.Errorf(`raw\n%v`, nil) }', 'go',
-    ['pl-k', 'func'], ['pl-en', 'Run'], ['pl-en', 'Errorf'], ['pl-s', '`raw\n%v`'], ['pl-c1', 'nil']);
+    ['pl-k', 'func'], ['pl-en', 'Run'], ['pl-en', 'Errorf'], ['pl-s', '`raw'], ['pl-s', '%v`'], ['pl-c1', 'nil']);
 });
 
 test('HTML, CSS and diff', () => {
@@ -85,7 +86,8 @@ test('HTML, CSS and diff', () => {
 
 test('the output is the source, escaped, and nothing but pl- spans', () => {
   const nasty = '<script>alert("x")</script> \' " & </span> <img onerror=x>\n/* <b> */ "</code>" `${"<"}`';
-  for (const lang of ['js', 'ts', 'python', 'sh', 'json', 'yaml', 'c', 'cpp', 'java', 'rust', 'go', 'html', 'css', 'diff']) {
+  for (const lang of ['js', 'ts', 'python', 'sh', 'json', 'yaml', 'c', 'cpp', 'java', 'rust', 'go', 'html', 'css', 'diff',
+    'toml', 'ini', 'make', 'dockerfile', 'ruby', 'lua', 'sql', 'cs', 'kotlin', 'swift', 'scss', 'conf']) {
     const out = highlight(nasty, lang);
     assert.equal(text(out), escaped(nasty), lang);
     for (const tag of out.match(/<[^>]*>/g) ?? []) assert.match(tag, /^(?:<span class="pl-[a-z0-9]+">|<\/span>)$/, `${lang}: ${tag}`);
@@ -96,7 +98,9 @@ test('linear time, also on input made to make it backtrack', () => {
   const line = { js: 'const v = f("s", 2.5) + `t` // c', python: 'v = f("s", 2.5)  # c', sh: 'echo "$v" ${x} # c',
     json: '{"k": [1, "s", true]},', yaml: 'key: "v" # c', c: 'int v = f("s", 2.5); // c', rust: "let v: &'a str = f(\"s\"); // c",
     go: 'v := f("s", 2.5) // c', java: 'int v = f("s", 2.5); // c', html: '<a href="x">t &amp; u</a>', css: '.a { color: #fff; }',
-    diff: '+ added line' };
+    diff: '+ added line', toml: 'key = "v" # c', ini: 'key = value ; c', make: '\t$(CC) -o $@ "$<" # c',
+    dockerfile: 'RUN echo "$HOME" && make \\', ruby: 'def f(x) = @a + :b # c', sql: "SELECT a FROM t WHERE b = 'c' -- d",
+    scss: '.a { $x: 1px; } // c', kotlin: 'fun f(s: String) = """t""" // c' };
   for (const [lang, l] of Object.entries(line)) {
     const big = Array(5000).fill(l).join('\n');
     highlight(l, lang);
@@ -115,7 +119,12 @@ test('linear time, also on input made to make it backtrack', () => {
   for (const [lang, s] of [['yaml', 'a' + ' '.repeat(n) + 'x'], ['yaml', 'a:b'.repeat(n / 3)], ['js', '"'.repeat(n)],
     ['js', '/*'.repeat(n / 2)], ['css', '{' + 'a:'.repeat(n / 2)], ['css', '{' + 'a'.repeat(n)], ['html', '<a '.repeat(n / 3)],
     ['html', '&'.repeat(n) + '<'], ['sh', '$'.repeat(n)], ['sh', '"$'.repeat(n / 2)], ['python', "'''".repeat(n / 3)],
-    ['c', '#'.repeat(n)], ['rust', "'".repeat(n)], ['go', '`'.repeat(n)], ['yaml', '- '.repeat(n / 2)]]) {
+    ['c', '#'.repeat(n)], ['rust', "'".repeat(n)], ['go', '`'.repeat(n)], ['yaml', '- '.repeat(n / 2)],
+    // a regular expression, a variable or a string that never closes, tried at every character
+    ['js', '/['.repeat(n / 2)], ['js', '/'.repeat(n)], ['sh', '${'.repeat(n / 2)], ['sh', '<<'.repeat(n / 2)],
+    ['make', 'a: ' + '$('.repeat(n / 2)], ['make', '\t' + '$('.repeat(n / 2)], ['ini', 'a' + ' '.repeat(n)],
+    ['html', '<a b="' + 'x'.repeat(n)], ['html', '<script>' + '<'.repeat(n)], ['toml', '"""'.repeat(n / 3)],
+    ['dockerfile', 'RUN ' + '\\'.repeat(n)], ['ruby', ':'.repeat(n)], ['lua', '--[['.repeat(n / 4)], ['scss', '$'.repeat(n)]]) {
     const t = performance.now();
     highlight(s, lang);
     const ms = performance.now() - t;
