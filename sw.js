@@ -23,6 +23,7 @@ const SHELL = [
   'src/diff.js',
   'src/find.js',
   'src/mdsyntax.js',
+  'src/filetypes.js',
   'src/fork.js',
   'src/images.js',
   'src/drafts.js',

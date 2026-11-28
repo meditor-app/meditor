@@ -244,6 +244,13 @@ body.resizing { user-select: none; -webkit-user-select: none; cursor: col-resize
 .tree .dir > .node { color: var(--ink-soft); }
 .tree .node.current { background: var(--accent-soft); color: var(--ink); font-weight: 600; }
 .tree .node .draft { color: var(--accent); font-size: 10px; }
+.tree .node.txt { color: var(--ink-soft); }
+.tree .node.current.txt { color: var(--ink); }
+.tree a.node.bin { color: var(--ink-faint); text-decoration: none; }
+.tree a.node.bin .ext { font-size: 10px; }
+#mdOnly[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); }
+/* a file that is not Markdown: no formatting toolbar (and no rendered panel, see ui.js) */
+.codefile .fmtbar { display: none; }
 .tree .note { color: var(--ink-faint); padding: 6px; font-size: 12px; }
 /* rename / delete, shown beside a file on hover (always on touch screens) */
 .tree .file { display: flex; align-items: center; position: relative; }
@@ -343,6 +350,17 @@ a.minor:hover { color: var(--accent); }
 .srchl .html { color: var(--ink-faint); }
 .srchl .fm { color: var(--ink-soft); }
 .srchl .fm.mk { color: var(--ink-faint); }
+/* code (code files, and fenced blocks in Markdown): the preview's colours (.pl-* below), less
+   what would change a character's width there (italic comments, bold diff headers) */
+.srchl .pl-c { color: var(--ink-faint); }
+.srchl .pl-k { color: var(--accent); }
+.srchl .pl-s, .srchl .pl-sr, .srchl .pl-ent { color: var(--good); }
+.srchl .pl-c1, .srchl .pl-v, .srchl .pl-en, .srchl .pl-e, .srchl .pl-mh, .srchl .pl-mdr { color: var(--link); }
+.srchl .pl-smi, .srchl .pl-kos { color: var(--ink); }
+.srchl .pl-s.pl-smi { color: var(--important); }
+.srchl .pl-md { color: var(--bad); background: color-mix(in srgb, var(--bad) 12%, transparent); }
+.srchl .pl-mi1 { color: var(--good); background: color-mix(in srgb, var(--good) 12%, transparent); }
+.srchl .pl-mc { color: var(--warning); }
 .srchl .hit { background: rgba(255, 196, 0, 0.32); border-radius: 2px; }
 .srchl .hit.cur { background: rgba(255, 140, 0, 0.55); box-shadow: 0 0 0 1px rgba(255, 120, 0, 0.9); }
 

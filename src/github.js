@@ -1,13 +1,15 @@
-// The GitHub REST API, as much of it as an editor of Markdown files needs.
+// The GitHub REST API, as much of it as an editor of text files needs.
 //
 // Everything goes straight from the browser to api.github.com, which allows that (CORS),
 // so the page needs no server of its own (apart from the sign-in relay, see auth.js).
 // The user's token never goes anywhere else.
 // `fetch` is injected so the tests can run against a fake.
 
+import { decodeText, MAX_TEXT_BYTES } from './filetypes.js';
+
 const API = 'https://api.github.com';
 
-export const MARKDOWN_EXT = /\.(md|markdown|mdown|mkdn|mkd|mdx|rmd)$/i;
+export { MARKDOWN_EXT } from './filetypes.js';
 
 export class GitHubError extends Error {
   constructor(status, message, body) {
@@ -29,12 +31,17 @@ export function bytesToBase64(bytes) {
   return btoa(bin);
 }
 
-/** Base64 (possibly wrapped over lines, as the API sends it) to UTF-8 text. */
-export function decodeBase64(b64) {
+/** Base64 (possibly wrapped over lines, as the API sends it) to bytes. */
+export function base64ToBytes(b64) {
   const bin = atob(b64.replace(/\s+/g, ''));
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return new TextDecoder().decode(bytes);
+  return bytes;
+}
+
+/** Base64 (possibly wrapped over lines, as the API sends it) to UTF-8 text. */
+export function decodeBase64(b64) {
+  return new TextDecoder().decode(base64ToBytes(b64));
 }
 
 // Names and paths go into API URLs, where fetch resolves '.' and '..' segments: a path
@@ -196,7 +203,13 @@ export class GitHub {
     };
   }
 
-  /** @returns {Promise<{text: string, sha: string}|null>} null when there is no such file */
+  /**
+   * A text file. One that is no text (binary content: see filetypes.js, decodeText) or larger
+   * than MAX_TEXT_BYTES comes back without its text, saying so (`binary`, `tooLarge`, with
+   * its `size`), and one that large is not even downloaded.
+   * @returns {Promise<{text: string, sha: string}|{text: null, sha: string, size: number,
+   *   binary?: true, tooLarge?: true}|null>} null when there is no such file
+   */
   async getFile(owner, name, path, ref) {
     let f;
     try {
@@ -206,12 +219,15 @@ export class GitHub {
       throw e;
     }
     if (Array.isArray(f) || f.type !== 'file') throw new GitHubError(400, `${path} is not a file`);
+    if (f.size > MAX_TEXT_BYTES) return { text: null, sha: f.sha, size: f.size, tooLarge: true };
+    let b64 = f.content || '';
     // Over 1 MB the contents API leaves `content` empty; the blob API has no such limit.
     if (f.encoding === 'none' || (!f.content && f.size > 0)) {
-      const blob = await this.request('GET', `${repoUrl(owner, name)}/git/blobs/${f.sha}`);
-      return { text: decodeBase64(blob.content), sha: f.sha };
+      b64 = (await this.request('GET', `${repoUrl(owner, name)}/git/blobs/${f.sha}`)).content;
     }
-    return { text: decodeBase64(f.content || ''), sha: f.sha };
+    const text = decodeText(base64ToBytes(b64));
+    if (text === null) return { text: null, sha: f.sha, size: f.size, binary: true };
+    return { text, sha: f.sha };
   }
 
   /** A file's bytes (for images in private repositories, which have no public URL). */
