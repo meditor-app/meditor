@@ -83,4 +83,22 @@ export const VECTORS = [
   '[^1]\n\n[^1]: <img src=x onerror=__xss()>',
   '# <img src=x onerror=__xss()>',
   '---\n<script>__xss()</script>\n---',
+  // named entities, decoded before the URL check
+  '<a href="java&Tab;script&colon;__xss()">x</a>',
+  '<a href="javascript&#58;__xss&lpar;&rpar;">x</a>',
+  // HTML blocks of each kind, spanning blank lines or Markdown
+  '<details>\n\n<img src=x onerror=__xss()>\n\n</details>',
+  '<pre>\n\n<img src=x onerror=__xss()>\n\n</pre>',
+  '<script>\n\n__xss()\n\n</script>',
+  '<style>\n\n</style><img src=x onerror=__xss()>',
+  '<textarea>\n\n</textarea><img src=x onerror=__xss()>',
+  '<span>\n<img src=x onerror=__xss()>\n</span>',
+  '<!-- x\n\n--><img src=x onerror=__xss()>',
+  '<?php\n\n?><img src=x onerror=__xss()>',
+  '<![CDATA[\n\n]]><img src=x onerror=__xss()>',
+  '<!DOCTYPE x><img src=x onerror=__xss()>',
+  '<script x="<">__xss()</script>',
+  '<div\n\nonclick=__xss()>x</div>',
+  '<a\t<img src=x onerror=__xss()>',
+  'a <!-- b <img src=x onerror=__xss()>',
 ];

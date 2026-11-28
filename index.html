@@ -19,6 +19,10 @@
 <link rel="manifest" href="manifest.webmanifest">
 <meta name="theme-color" content="#14202a">
 <link rel="stylesheet" href="src/app.css">
+<!-- In <head> so that it is fetched at once (a module script still runs only once the page
+     is parsed): ui.js sets the chosen theme the moment it runs, so as a rule before the page is
+     first drawn. Only an inline script could promise that, and the policy above forbids it. -->
+<script type="module" src="src/main.js"></script>
 </head>
 <body>
 <div class="app">
@@ -29,7 +33,7 @@
     <button id="install" type="button" title="install meditor as an app on this computer: its own window and icon, and it starts without a network" hidden>install app</button>
     <button id="account" type="button" title="sign in to GitHub with a personal access token">sign in</button>
     <a class="ghlink" href="https://github.com/meditor-app/meditor-app.github.io" title="source on GitHub">source</a>
-    <button id="theme" type="button" title="switch light / dark theme">◐</button>
+    <button id="theme" type="button" title="switch light / dark theme" aria-label="switch light / dark theme">◐</button>
   </header>
 
   <nav class="toolbar" aria-label="document">
@@ -39,28 +43,28 @@
     </div>
     <div class="fmtbar">
     <div class="group fmt" id="fmt">
-      <button type="button" data-cmd="bold" title="bold (Ctrl+B)"><b>B</b></button>
-      <button type="button" data-cmd="italic" title="italic (Ctrl+I)"><i>I</i></button>
-      <button type="button" data-cmd="strike" title="strikethrough"><s>S</s></button>
-      <button type="button" data-cmd="code" title="inline code (Ctrl+E)"><code>&lt;/&gt;</code></button>
+      <button type="button" data-cmd="bold" title="bold (Ctrl+B)" aria-label="bold"><b>B</b></button>
+      <button type="button" data-cmd="italic" title="italic (Ctrl+I)" aria-label="italic"><i>I</i></button>
+      <button type="button" data-cmd="strike" title="strikethrough" aria-label="strikethrough"><s>S</s></button>
+      <button type="button" data-cmd="code" title="inline code (Ctrl+E)" aria-label="inline code"><code>&lt;/&gt;</code></button>
     </div>
     <div class="group fmt">
-      <button type="button" data-cmd="h1" title="heading 1 (Ctrl+1)">H1</button>
-      <button type="button" data-cmd="h2" title="heading 2 (Ctrl+2)">H2</button>
-      <button type="button" data-cmd="h3" title="heading 3 (Ctrl+3)">H3</button>
+      <button type="button" data-cmd="h1" title="heading 1 (Ctrl+1)" aria-label="heading 1">H1</button>
+      <button type="button" data-cmd="h2" title="heading 2 (Ctrl+2)" aria-label="heading 2">H2</button>
+      <button type="button" data-cmd="h3" title="heading 3 (Ctrl+3)" aria-label="heading 3">H3</button>
     </div>
     <div class="group fmt">
-      <button type="button" data-cmd="ul" title="bulleted list">•</button>
-      <button type="button" data-cmd="ol" title="numbered list">1.</button>
-      <button type="button" data-cmd="task" title="task list">☐</button>
-      <button type="button" data-cmd="quote" title="quote">❝</button>
+      <button type="button" data-cmd="ul" title="bulleted list" aria-label="bulleted list">•</button>
+      <button type="button" data-cmd="ol" title="numbered list" aria-label="numbered list">1.</button>
+      <button type="button" data-cmd="task" title="task list" aria-label="task list">☐</button>
+      <button type="button" data-cmd="quote" title="quote" aria-label="quote">❝</button>
     </div>
     <div class="group fmt">
       <button type="button" data-cmd="link" title="link (Ctrl+K)">link</button>
-      <button type="button" data-cmd="image" title="image">img</button>
-      <button type="button" data-cmd="codeblock" title="code block">```</button>
+      <button type="button" data-cmd="image" title="image" aria-label="image">img</button>
+      <button type="button" data-cmd="codeblock" title="code block" aria-label="code block">```</button>
       <button type="button" data-cmd="table" title="table">table</button>
-      <button type="button" data-cmd="rule" title="horizontal rule">—</button>
+      <button type="button" data-cmd="rule" title="horizontal rule" aria-label="horizontal rule">—</button>
     </div>
     </div>
     <span class="spacer"></span>
@@ -87,16 +91,16 @@
         </label>
         <div class="filetools" id="fileTools" hidden>
           <input id="filter" type="search" placeholder="filter files" aria-label="filter files" autocomplete="off">
-          <button id="mdOnly" type="button" aria-pressed="false" title="show only the Markdown files">md</button>
-          <button id="newFile" type="button" title="create a new file in this repository (Markdown, or any other text)">＋ new</button>
-          <button id="refresh" type="button" title="reload the file list from GitHub">↻</button>
+          <button id="mdOnly" type="button" aria-pressed="false" title="show only the Markdown files" aria-label="Markdown files only">md</button>
+          <button id="newFile" type="button" title="create a new file in this repository (Markdown, or any other text)" aria-label="new file">＋ new</button>
+          <button id="refresh" type="button" title="reload the file list from GitHub" aria-label="reload the file list">↻</button>
         </div>
       </div>
       <details id="recentBox" class="recentbox" hidden>
         <summary>recent files</summary>
         <ul class="recent" data-recent></ul>
       </details>
-      <div id="tree" class="tree" role="tree"></div>
+      <nav id="tree" class="tree" aria-label="Markdown files"></nav>
       <div id="filesEmpty" class="empty">
         <h2>No repository open</h2>
         <p>You are editing the <b>scratchpad</b>, kept in this browser.</p>
@@ -114,7 +118,7 @@
     <section class="pane editorpane" aria-label="source">
       <div class="panehead">
         <span id="docPath" class="docpath">scratchpad</span>
-        <span id="dirty" class="dirty" title="changed since it was opened or committed" hidden>●</span>
+        <span id="dirty" class="dirty" title="changed since it was opened or committed" role="img" aria-label="unsaved changes" hidden>●</span>
         <span class="spacer"></span>
         <a id="viewOnGh" class="minor" target="_blank" rel="noopener" hidden>on GitHub ↗</a>
         <button id="findOpen" type="button" class="minor flat" title="find and replace in the source (Ctrl+F, Ctrl+H)">find</button>
@@ -125,11 +129,11 @@
         <div class="findrow">
           <input id="findInput" type="text" placeholder="find" aria-label="find" autocomplete="off" spellcheck="false">
           <span id="findCount" class="findcount" aria-live="polite"></span>
-          <button type="button" class="opt" data-find-opt="caseSensitive" aria-pressed="false" title="match case (Alt+C)">Aa</button>
-          <button type="button" class="opt" data-find-opt="wholeWord" aria-pressed="false" title="whole words only (Alt+W)"><u>ab</u></button>
-          <button type="button" class="opt" data-find-opt="regex" aria-pressed="false" title="regular expression (Alt+R); the replacement may use $1, $&lt;name&gt;, \n">.*</button>
-          <button id="findPrev" type="button" title="previous match (Shift+Enter, Shift+F3)">↑</button>
-          <button id="findNext" type="button" title="next match (Enter, F3)">↓</button>
+          <button type="button" class="opt" data-find-opt="caseSensitive" aria-pressed="false" title="match case (Alt+C)" aria-label="match case">Aa</button>
+          <button type="button" class="opt" data-find-opt="wholeWord" aria-pressed="false" title="whole words only (Alt+W)" aria-label="whole words only"><u>ab</u></button>
+          <button type="button" class="opt" data-find-opt="regex" aria-pressed="false" aria-label="regular expression" title="regular expression (Alt+R); the replacement may use $1, $&lt;name&gt;, \n">.*</button>
+          <button id="findPrev" type="button" title="previous match (Shift+Enter, Shift+F3)" aria-label="previous match">↑</button>
+          <button id="findNext" type="button" title="next match (Enter, F3)" aria-label="next match">↓</button>
           <button id="replaceToggle" type="button" aria-expanded="false" aria-controls="replaceRow" title="replace (Ctrl+H, Ctrl+Alt+F)">replace</button>
           <button id="findClose" type="button" title="close (Esc)" aria-label="close">×</button>
         </div>
@@ -151,7 +155,7 @@
         <span id="renderNote" class="minor"></span>
         <span class="spacer"></span>
         <label class="minor" title="render here as you type, or ask GitHub to render it (exact, but slower and limited to a few thousand renders an hour)">by
-          <select id="renderer">
+          <select id="renderer" aria-label="render with">
             <option value="local">meditor (live)</option>
             <option value="github">GitHub (exact)</option>
           </select>
@@ -228,8 +232,8 @@
     <div id="repoListBox">
       <label class="field"><span class="row">or one of yours <span class="spacer"></span>
           <span id="reposAge" class="help"></span>
-          <button type="button" id="reposRefresh" class="tiny" title="reload the list from GitHub">↻</button></span>
-        <input id="repoFilter" type="search" autocomplete="off" placeholder="filter">
+          <button type="button" id="reposRefresh" class="tiny" title="reload the list from GitHub" aria-label="reload your repositories">↻</button></span>
+        <input id="repoFilter" type="search" autocomplete="off" placeholder="filter" aria-label="filter your repositories">
       </label>
       <ul id="repoList" class="repolist"></ul>
     </div>
@@ -256,10 +260,10 @@
     <fieldset class="choice">
       <label><input type="radio" name="target" value="direct" checked> <span>commit directly to <b id="commitBranch" class="mono"></b></span></label>
       <label><input type="radio" name="target" value="pr"> <span>commit to a new branch and open a pull request</span>
-        <input id="prBranch" type="text" autocomplete="off" spellcheck="false" class="mono"></label>
+        <input id="prBranch" type="text" autocomplete="off" spellcheck="false" class="mono" aria-label="new branch name"></label>
       <label id="forkChoice"><input type="radio" name="target" value="fork">
         <span>fork the repository to <b id="forkUser"></b> and propose this change: a pull request to <b id="forkBase" class="mono"></b> from a new branch of the fork</span>
-        <input id="forkBranch" type="text" autocomplete="off" spellcheck="false" class="mono"></label>
+        <input id="forkBranch" type="text" autocomplete="off" spellcheck="false" class="mono" aria-label="new branch name in the fork"></label>
     </fieldset>
     <p id="commitNote" class="help"></p>
     <p id="commitProgress" class="help progress" hidden></p>
@@ -306,12 +310,11 @@
     <div class="actions">
       <span class="spacer"></span>
       <button type="button" data-close>cancel</button>
-      <button id="fileGo" class="primary"></button>
+      <button id="fileGo" class="primary">rename</button>
     </div>
   </form>
 </dialog>
 
 <div id="toast" class="toast" role="alert" hidden></div>
-<script type="module" src="src/main.js"></script>
 </body>
 </html>

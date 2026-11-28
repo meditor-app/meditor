@@ -38,20 +38,24 @@ export function isBinaryPath(path) {
 }
 
 /**
- * A file's bytes as text, or null when they are not text: a NUL byte in the first 8,000
- * (as git decides), or not valid UTF-8 (a UTF-16 file has NULs; Latin-1 is not UTF-8 either,
- * and saving it as UTF-8 would change every accented letter).
- * @param {Uint8Array} bytes
- * @returns {string|null}
+ * Why the file at `path` (of `size` bytes, if known) is not opened as text, judging by its
+ * name and size: 'binary', 'large', or '' (it may be: its content decides, see github.js).
  */
-export function decodeText(bytes) {
+export function notTextKind(path, size) {
+  if (isBinaryPath(path)) return 'binary';
+  if (size > MAX_TEXT_BYTES) return 'large';
+  return '';
+}
+
+/**
+ * Whether a file's bytes are binary: a NUL byte in the first 8,000, as git decides. (A text
+ * file that is not UTF-8 is told by github.js, decodeFile: it is not opened either.)
+ * @param {Uint8Array} bytes
+ */
+export function isBinaryContent(bytes) {
   const head = Math.min(bytes.length, 8000);
-  for (let i = 0; i < head; i++) if (bytes[i] === 0) return null;
-  try {
-    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-  } catch {
-    return null;
-  }
+  for (let i = 0; i < head; i++) if (bytes[i] === 0) return true;
+  return false;
 }
 
 // Files known by their name rather than an extension (lower case).

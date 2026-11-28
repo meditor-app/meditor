@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  isMarkdown, isBinaryPath, decodeText, fileLanguage, newFilePath, MAX_TEXT_BYTES,
+  isMarkdown, isBinaryPath, isBinaryContent, notTextKind, fileLanguage, newFilePath, MAX_TEXT_BYTES,
 } from '../src/filetypes.js';
 import { GitHub, bytesToBase64, encodeBase64 } from '../src/github.js';
 import { newFileText } from '../src/drafts.js';
@@ -21,17 +21,18 @@ test('binary files, by extension', () => {
   }
 });
 
-test('binary content: NUL bytes or invalid UTF-8', () => {
+test('binary content: NUL bytes in the first 8,000; and by name or size', () => {
   const enc = (s) => new TextEncoder().encode(s);
-  assert.equal(decodeText(enc('Příliš žluťoučký kůň 🐎\n')), 'Příliš žluťoučký kůň 🐎\n');
-  assert.equal(decodeText(new Uint8Array()), '');
-  assert.equal(decodeText(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13])), null); // a PNG
-  assert.equal(decodeText(new Uint8Array([0xff, 0xfe, 0x61, 0x00])), null); // UTF-16
-  assert.equal(decodeText(new Uint8Array([0x63, 0x61, 0x66, 0xe9])), null); // Latin-1 "café"
-  assert.equal(decodeText(new Uint8Array([0xe2, 0x82])), null); // cut in the middle of a character
-  // a NUL far into a file does not make it binary by itself (git looks at the first 8,000 bytes)
-  const late = enc('a'.repeat(9000) + '\0');
-  assert.equal(decodeText(late), 'a'.repeat(9000) + '\0');
+  assert.equal(isBinaryContent(enc('Příliš žluťoučký kůň 🐎\n')), false);
+  assert.equal(isBinaryContent(new Uint8Array()), false);
+  assert.equal(isBinaryContent(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13])), true); // a PNG
+  assert.equal(isBinaryContent(new Uint8Array([0xff, 0xfe, 0x61, 0x00])), true); // UTF-16
+  // a NUL far into a file does not make it binary by itself (as git decides)
+  assert.equal(isBinaryContent(enc('a'.repeat(9000) + '\0')), false);
+  assert.equal(notTextKind('logo.png', 10), 'binary');
+  assert.equal(notTextKind('a.json', MAX_TEXT_BYTES + 1), 'large');
+  assert.equal(notTextKind('a.json', MAX_TEXT_BYTES), '');
+  assert.equal(notTextKind('a.json'), '');
 });
 
 test('a file\'s language: by extension, by name, by #! line', () => {
@@ -106,10 +107,12 @@ test('getFile says when a file is not text, or too large, rather than mangle it'
     'GET /repos/o/r/git/blobs/s5': { content: encodeBase64('a,b\n'), encoding: 'base64' },
   });
   const gh = new GitHub('T', f);
-  assert.deepEqual(await gh.getFile('o', 'r', 'a.js', 'main'), { text: 'let a = 1', sha: 's1' });
+  const plain = { eol: '\n', bom: false, utf8: true };
+  assert.deepEqual(await gh.getFile('o', 'r', 'a.js', 'main'), { text: 'let a = 1', sha: 's1', format: plain });
   assert.deepEqual(await gh.getFile('o', 'r', 'img.dat', 'main'), { text: null, sha: 's2', size: 8, binary: true });
-  assert.deepEqual(await gh.getFile('o', 'r', 'old.txt', 'main'), { text: null, sha: 's3', size: 4, binary: true });
+  // not UTF-8 (Latin-1 "café"): not opened either, rather than shown and saved with U+FFFD
+  assert.deepEqual(await gh.getFile('o', 'r', 'old.txt', 'main'), { text: null, sha: 's3', size: 4, binary: true, notUtf8: true });
   assert.deepEqual(await gh.getFile('o', 'r', 'big.json', 'main'), { text: null, sha: 's4', size: MAX_TEXT_BYTES + 1, tooLarge: true });
   assert.ok(!f.calls.some((u) => u.includes('/git/blobs/s4')), 'a file too large is not downloaded');
-  assert.deepEqual(await gh.getFile('o', 'r', 'mid.csv', 'main'), { text: 'a,b\n', sha: 's5' });
+  assert.deepEqual(await gh.getFile('o', 'r', 'mid.csv', 'main'), { text: 'a,b\n', sha: 's5', format: plain });
 });

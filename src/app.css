@@ -13,12 +13,12 @@
   --panel: #eef2f5;
   --ink: #0b1620;
   --ink-soft: #46596a;
-  --ink-faint: #7b8e9b;
+  --ink-faint: #546673;
   --rule: #aab9c3;
   --rule-soft: #cad6dd;
   --accent: #a1155b;
   --accent-soft: #fbdcea;
-  --bad: #c0392b;
+  --bad: #b53328;
   --good: #1f7a4d;
   --link: #1d5d8f;
   --code-bg: #eef2f5;
@@ -26,8 +26,8 @@
   --note: #2a6fb0;
   --tip: #1f7a4d;
   --important: #7a4bc2;
-  --warning: #9a6700;
-  --caution: #c0392b;
+  --warning: #906000;
+  --caution: #b53328;
 
   --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
   --serif: "Latin Modern Roman", "CMU Serif", ui-serif, "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
@@ -41,7 +41,7 @@
     --panel: #26333d;
     --ink: #f2f8fb;
     --ink-soft: #adbfca;
-    --ink-faint: #83959f;
+    --ink-faint: #9cadb7;
     --rule: #557084;
     --rule-soft: #3d5361;
     --accent: #ffa6ce;
@@ -59,12 +59,13 @@
 }
 
 :root[data-theme="dark"] {
+  color-scheme: dark;
   --paper: #202c35;
   --plate: #2b3a44;
   --panel: #26333d;
   --ink: #f2f8fb;
   --ink-soft: #adbfca;
-  --ink-faint: #83959f;
+  --ink-faint: #9cadb7;
   --rule: #557084;
   --rule-soft: #3d5361;
   --accent: #ffa6ce;
@@ -80,8 +81,14 @@
   --caution: #ff8a7a;
 }
 
+/* A theme chosen with the ◐ button (ui.js) overrides the system's: native controls too —
+   scrollbars, the list a <select> opens, checkboxes — are drawn in it. */
+:root[data-theme="light"] { color-scheme: light; }
+
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
+/* read by screen readers, not shown */
+.sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
 html, body { margin: 0; height: 100%; }
 

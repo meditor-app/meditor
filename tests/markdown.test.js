@@ -109,7 +109,7 @@ test('footnotes, rules, breaks, entities, front matter', () => {
 
 test('raw HTML is kept but sanitised', () => {
   assert.equal(md('<details><summary>s</summary>\n\nbody\n\n</details>'),
-    '<div class="html-block"><details><summary>s</summary></div>\n<p>body</p>\n<div class="html-block"></details></div>');
+    '<details><summary>s</summary>\n<p>body</p>\n</details>');
   assert.equal(sanitizeHtml('<img src=x onerror="alert(1)"><script>alert(2)</script>'), '<img src="x">');
   assert.equal(sanitizeHtml('<a href="javascript:x" title=t>k</a>'), '<a title="t">k</a>');
   assert.equal(sanitizeHtml('<iframe src="x"></iframe><b style="x">b</b>'), '<b>b</b>');

@@ -24,7 +24,8 @@ browser. The only server-side piece is a tiny relay that completes *Sign in with
   Markdown ones only); switch branches above it, create a file with *＋ new*. Hover over a
   file for *✎* (rename or move it) and *✕* (delete it): each is one commit to the branch, and
   the file's draft and its place among the recent files go with it.
-- **What can be edited**: any text file up to 2 MB in UTF-8. Markdown is edited beside its
+- **What can be edited**: any text file up to 2 MB in UTF-8 (committed with the line endings
+  and byte-order mark it had). Markdown is edited beside its
   rendered page, with the formatting toolbar; any other text file takes the whole width, with
   syntax colours if its language is one meditor knows (by its extension, its name —
   `Makefile`, `Dockerfile`, `.gitignore`, `.editorconfig`… — or a script's `#!` line):

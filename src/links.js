@@ -47,7 +47,8 @@ export function formatFragment(loc) {
 /**
  * A github.com URL (or "owner/name") as a location. The part after blob/ or tree/ is the
  * branch and the path run together, and branch names may contain '/', so it comes back
- * as `rest` for the caller to split once it knows the repository's branches.
+ * as `rest` for the caller to split once it knows the repository's branches. A full ref
+ * name ('refs/heads/main/a.md', as GitHub's Raw button gives) is shortened to the name.
  * @returns {{owner: string, name: string, rest?: string}|null}
  */
 export function parseGitHubUrl(input) {
@@ -60,7 +61,7 @@ export function parseGitHubUrl(input) {
   const out = { owner: m[1], name: m[2] };
   if (m[3]) {
     let rest;
-    try { rest = decodeURIComponent(m[3]).replace(/\/+$/, ''); } catch { return null; }
+    try { rest = decodeURIComponent(m[3]).replace(/\/+$/, '').replace(/^refs\/(?:heads|tags)\//, ''); } catch { return null; }
     // the branch and the path, so both are safe if every segment is
     if (rest && !isSafePath(rest)) return null;
     if (rest) out.rest = rest;
@@ -104,8 +105,11 @@ export function joinPath(dir, rel) {
 const isAbsolute = (url) => /^[a-zA-Z][a-zA-Z0-9+.-]*:|^\/\//.test(url);
 
 /**
- * How a URL inside the document at `loc` should be followed.
- * @returns {{kind: 'external'|'anchor'|'repo', url: string, path?: string, hash?: string}}
+ * How a URL inside the document at `loc` should be followed. A relative URL that leaves
+ * the repository (or that joinPath refuses) is 'outside': its `url` is then where it
+ * leads on github.com, as it would from the file's page there ('../../issues' from the
+ * README is the repository's issues), never an address relative to the editor's page.
+ * @returns {{kind: 'external'|'anchor'|'repo'|'outside', url: string, path?: string, hash?: string}}
  */
 export function resolveRef(url, loc) {
   if (!url || isAbsolute(url)) return { kind: 'external', url };
@@ -113,8 +117,20 @@ export function resolveRef(url, loc) {
   const [, pathPart, query = '', hash = ''] = url.match(/^([^?#]*)(\?[^#]*)?(#.*)?$/);
   let path;
   try { path = joinPath(dirname(loc.path || ''), decodeURIComponent(pathPart)); } catch { path = null; }
-  if (path === null) return { kind: 'external', url };
+  if (path === null) return { kind: 'outside', url: onGitHub(url, loc) };
   return { kind: 'repo', url, path, hash: hash.slice(1), query };
+}
+
+function onGitHub(url, loc) {
+  const repo = `https://github.com/${encodeURIComponent(loc.owner || '')}/${encodeURIComponent(loc.name || '')}`;
+  if (!loc.owner || !loc.name || !loc.ref) return repo;
+  try {
+    const u = new URL(url, githubUrl(loc, loc.path || ''));
+    // a backslash may make it read as '//host'; it stays on github.com
+    return u.origin === 'https://github.com' ? u.href : repo;
+  } catch {
+    return repo;
+  }
 }
 
 /** The address of a file of the repository on github.com. */
