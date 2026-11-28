@@ -1,7 +1,7 @@
 // #31: opening a location reads everything before the editor takes any of it over.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { loadLocation, latest, defaultFile, sameRepo } from '../src/nav.js';
+import { loadLocation, latest, defaultFile, sameRepo, NotTextError } from '../src/nav.js';
 
 const R1 = { owner: 'o1', name: 'r1', defaultBranch: 'main', canPush: true };
 const R2 = { owner: 'o2', name: 'r2', defaultBranch: 'main', canPush: false };
@@ -41,9 +41,10 @@ function fakeGh({ repos = [R1, R2], trees = {}, files = {}, branches = {} } = {}
 const file = (path) => ({ path, type: 'file' });
 
 test('a file that fails to load after a repository change leaves nothing half-switched', async () => {
-  // the issue's example: o1/r1 README.md is open; o2/r2's docs.md is a directory
+  // the issue's example: o1/r1 README.md is open; o2/r2's docs.md cannot be read (it was a
+  // directory there; a directory the file list knows opens its README now, see below)
   const gh = fakeGh({
-    trees: { 'o2/r2@main': [file('README.md'), { path: 'docs.md', type: 'dir' }] },
+    trees: { 'o2/r2@main': [file('README.md')] },
     files: { 'o2/r2@main:docs.md': new Error('docs.md is not a file') },
   });
   const cur = {
@@ -127,4 +128,36 @@ test('defaultFile prefers the README, then a top-level file', () => {
   assert.equal(defaultFile([file('docs/a.md'), file('b.md')]), 'b.md');
   assert.equal(defaultFile([file('docs/a.md'), file('x.txt')]), 'docs/a.md');
   assert.equal(defaultFile([file('x.txt')]), undefined);
+});
+
+test('a directory opens its README; a file that is not text is refused, changing nothing', async () => {
+  const gh = fakeGh({
+    trees: { 'o2/r2@main': [file('README.md'), { path: 'docs', type: 'dir' }, file('docs/readme.md'), { path: 'img', type: 'dir' },
+      file('img/logo.png'), { ...file('big.json'), size: 3e6 }, file('data.bin.txt'), file('latin.txt')] },
+    files: { 'o2/r2@main:docs/readme.md': 'docs', 'o2/r2@main:README.md': 'top' },
+  });
+  gh.getFile = async (owner, name, path) => {
+    gh.calls.push(`file ${path}`);
+    if (path === 'data.bin.txt') return { text: null, sha: 's', size: 9, binary: true };
+    if (path === 'latin.txt') return { text: null, sha: 's', size: 9, binary: true, notUtf8: true };
+    return { text: path, sha: 's' };
+  };
+  const cur = { repo: null, tree: null, loc: null };
+  const want = (path) => ({ owner: 'o2', name: 'r2', ref: 'main', path });
+  assert.equal((await loadLocation(gh, cur, want('docs'))).loc.path, 'docs/readme.md');
+  assert.equal((await loadLocation(gh, cur, want('img'))).loc.path, 'README.md', 'no README of its own: the repository\'s');
+  const refused = (path, kind) => assert.rejects(loadLocation(gh, cur, want(path)), (e) => e instanceof NotTextError && e.notText === kind && e.loc.path === path);
+  gh.calls.length = 0;
+  await refused('img/logo.png', 'binary');
+  await refused('big.json', 'large');
+  assert.ok(!gh.calls.some((c) => c.startsWith('file ')), 'known by name or size: not even read');
+  await refused('data.bin.txt', 'binary');
+  await refused('latin.txt', 'encoding');
+  // what an earlier try found is not read again
+  gh.calls.length = 0;
+  await assert.rejects(loadLocation(gh, { ...cur, notText: (l) => (l.path === 'latin.txt' ? 'encoding' : '') }, want('latin.txt')), NotTextError);
+  assert.ok(!gh.calls.some((c) => c.startsWith('file ')));
+  assert.deepEqual(cur, { repo: null, tree: null, loc: null });
+  assert.equal(defaultFile([file('a/README.md'), file('b.md')], 'a'), 'a/README.md');
+  assert.equal(defaultFile([file('a/b/README.md'), file('b.md')], 'a'), 'b.md', 'not a README further down');
 });

@@ -13,7 +13,7 @@
      from anywhere, as on GitHub. -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src * data: blob:; connect-src 'self' https://api.github.com https://raw.githubusercontent.com https://meditor-auth.ondra-lengal.workers.dev; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'">
 <title>meditor — Markdown editor for GitHub</title>
-<meta name="description" content="Edit the Markdown files of your GitHub repositories in the browser, side by side with the rendered page.">
+<meta name="description" content="Edit the Markdown files of your GitHub repositories in the browser, side by side with the rendered page, and their other text files too.">
 <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="manifest" href="manifest.webmanifest">
@@ -91,7 +91,8 @@
         </label>
         <div class="filetools" id="fileTools" hidden>
           <input id="filter" type="search" placeholder="filter files" aria-label="filter files" autocomplete="off">
-          <button id="newFile" type="button" title="create a new Markdown file in this repository" aria-label="new file">＋ new</button>
+          <button id="mdOnly" type="button" aria-pressed="false" title="show only the Markdown files" aria-label="Markdown files only">md</button>
+          <button id="newFile" type="button" title="create a new file in this repository (Markdown, or any other text)" aria-label="new file">＋ new</button>
           <button id="refresh" type="button" title="reload the file list from GitHub" aria-label="reload the file list">↻</button>
         </div>
       </div>
@@ -114,14 +115,14 @@
       </div>
     </aside>
 
-    <section class="pane editorpane" aria-label="Markdown">
+    <section class="pane editorpane" aria-label="source">
       <div class="panehead">
         <span id="docPath" class="docpath">scratchpad</span>
         <span id="dirty" class="dirty" title="changed since it was opened or committed" role="img" aria-label="unsaved changes" hidden>●</span>
         <span class="spacer"></span>
         <a id="viewOnGh" class="minor" target="_blank" rel="noopener" hidden>on GitHub ↗</a>
         <button id="findOpen" type="button" class="minor flat" title="find and replace in the source (Ctrl+F, Ctrl+H)">find</button>
-        <label class="minor toggle" title="colour the Markdown markup in the source"><input type="checkbox" id="highlight" checked> colours</label>
+        <label class="minor toggle" title="colour the Markdown markup, or the code, in the source"><input type="checkbox" id="highlight" checked> colours</label>
       </div>
       <div id="banner" class="banner" hidden></div>
       <div id="findBar" class="findbar" role="search" hidden>
@@ -283,7 +284,9 @@
     <label class="field">path in the repository
       <input id="newPath" type="text" autocomplete="off" spellcheck="false" class="mono" required>
     </label>
-    <p class="help">Nothing is created on GitHub until you commit it.</p>
+    <p class="help">Any text file: a name without an extension gets <code>.md</code> (but a
+      <code>Makefile</code>, <code>LICENSE</code> or <code>.gitignore</code> stays as it is).
+      Nothing is created on GitHub until you commit it.</p>
     <p id="newError" class="error" hidden></p>
     <div class="actions">
       <span class="spacer"></span>

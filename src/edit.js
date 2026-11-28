@@ -215,19 +215,60 @@ export function rule(sel) {
   return { text: text.slice(0, start) + ins + text.slice(end), start: p, end: p };
 }
 
-/** Tab / Shift-Tab: indent or outdent the selected lines (by two spaces, like list nesting). */
-export function indent(sel, out = false) {
+/**
+ * Tab / Shift-Tab: indent or outdent the selected lines (by two spaces, like list nesting).
+ * In a code file, `unit` (see indentUnit) is what one level is, and Tab at a caret always
+ * inserts it there (a line starting with "- " is no list item in, say, YAML).
+ */
+export function indent(sel, out = false, code = null) {
   const { text, start, end } = sel;
-  if (!out && start === end && !LIST.test(text.slice(lineStart(text, start), lineEnd(text, start)))) {
-    return { text: text.slice(0, start) + '  ' + text.slice(end), start: start + 2, end: start + 2 };
+  const unit = code || '  ';
+  if (!out && start === end && (code || !LIST.test(text.slice(lineStart(text, start), lineEnd(text, start))))) {
+    return { text: text.slice(0, start) + unit + text.slice(end), start: start + unit.length, end: start + unit.length };
   }
-  const r = mapLines(sel, (l) => (out ? l.replace(/^ {1,2}|^\t/, '') : '  ' + l));
+  // out: one unit, or as much of one as there is (a tab counts as one)
+  const strip = new RegExp(`^(?:\\t| {1,${unit === '\t' ? 4 : unit.length}})`);
+  const r = mapLines(sel, (l) => (out ? l.replace(strip, '') : unit + l));
   if (start === end) {
     const delta = r.text.length - text.length;
     const p = Math.max(lineStart(text, start), start + delta);
     return { text: r.text, start: p, end: p };
   }
   return r;
+}
+
+/**
+ * What Tab inserts in a code file: a tab if its lines are indented with tabs (or it is a
+ * Makefile, whose recipes must be), else as many spaces as its smallest indentation step
+ * (2 or 4; 2 when it has none yet).
+ */
+export function indentUnit(text, tabs = false) {
+  if (tabs) return '\t';
+  let tab = 0;
+  let space = 0;
+  const steps = new Map();
+  const re = /^([ \t]+)\S/gm;
+  let m;
+  let n = 0;
+  while ((m = re.exec(text)) && n < 2000) {
+    n++;
+    const ws = m[1];
+    if (ws[0] === '\t') { tab++; continue; }
+    space++;
+    if (ws.length === 2 || ws.length === 4 || ws.length === 8) steps.set(ws.length, (steps.get(ws.length) || 0) + 1);
+  }
+  if (tab > space) return '\t';
+  // indented by 2 in places: 2 (4 and 8 are multiples of it); else 4 if anything
+  if (steps.get(2)) return '  ';
+  return steps.size ? '    ' : '  ';
+}
+
+/** Enter in a code file: the new line starts indented like the one it breaks. */
+export function newlineIndent(sel) {
+  const { text, start } = sel;
+  const from = lineStart(text, start);
+  const ws = text.slice(from, start).match(/^[ \t]*/)[0];
+  return insert(sel, '\n' + ws);
 }
 
 /**

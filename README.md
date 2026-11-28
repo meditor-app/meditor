@@ -3,8 +3,10 @@
 # meditor
 
 Edit the Markdown files of your GitHub repositories in the browser: the source on one side,
-the rendered page on the other, and a commit (or a pull request) when you are done.
-In the spirit of [prose.io](https://prose.io), as one static page.
+the rendered page on the other, and a commit (or a pull request) when you are done. The
+repository's other text files — code, configuration, `.gitignore`, `Makefile` — can be
+edited too, with syntax colours. In the spirit of [prose.io](https://prose.io), as one
+static page.
 
 **→ <https://meditor-app.github.io/>**
 
@@ -17,10 +19,23 @@ browser. The only server-side piece is a tiny relay that completes *Sign in with
 
 - **Open a repository** with *open…* (`Ctrl+O`): pick one of yours, or paste a GitHub URL or
   `owner/name`. A link to a file (`https://github.com/owner/name/blob/main/docs/x.md`) opens
-  that file. The file list on the left shows the branch's Markdown files; switch branches
-  above it, create a file with *＋ new*. Hover over a file for *✎* (rename or move it) and
-  *✕* (delete it): each is one commit to the branch, and the file's draft and its place among
-  the recent files go with it.
+  that file, a link to a directory its README. A repository opens on its README (or another
+  Markdown file). The file list on the left shows all the branch's files (*md* shows the
+  Markdown ones only); switch branches above it, create a file with *＋ new*. Hover over a
+  file for *✎* (rename or move it) and *✕* (delete it): each is one commit to the branch, and
+  the file's draft and its place among the recent files go with it.
+- **What can be edited**: any text file up to 2 MB in UTF-8 (committed with the line endings
+  and byte-order mark it had). Markdown is edited beside its
+  rendered page, with the formatting toolbar; any other text file takes the whole width, with
+  syntax colours if its language is one meditor knows (by its extension, its name —
+  `Makefile`, `Dockerfile`, `.gitignore`, `.editorconfig`… — or a script's `#!` line):
+  JavaScript/TypeScript (JSX, TSX), JSON, YAML, TOML, INI, shell, Python, Ruby, Lua, SQL,
+  C/C++, C#, Java, Kotlin, Swift, Go, Rust, HTML/XML/SVG (with the scripts and styles in a
+  page), CSS/SCSS/Less, Makefile, Dockerfile, diff. Others (`.txt`, `.csv`, `LICENSE`) are
+  plain text. There, `Tab` indents by the file's own unit (spaces or a tab) and `Enter`
+  keeps the line's indentation. Files that are not text — images, archives, fonts, PDFs,
+  anything with NUL bytes or not in UTF-8 — and larger ones are listed (marked ↗) but open
+  on github.com.
 - **Edit** on the left, read on the right. The two panels scroll together (*sync scroll*);
   links between documents of the repository open in the editor, and images from the
   repository show, private ones included. Tick a task box in the rendered page and the
@@ -37,13 +52,14 @@ browser. The only server-side piece is a tiny relay that completes *Sign in with
     expressions (`Alt+C`, `Alt+W`, `Alt+R`; the replacement may use `$1`); *replace all*
     is undone by one `Ctrl+Z`. On macOS: `⌘F` finds, `⌥⌘F` replaces, `⌃⌥C`, `⌃⌥W`, `⌃⌥R`
     toggle the options (`Ctrl+H` stays delete-backward)
-  - the Markdown in the source is lightly coloured; *colours* in the panel's header turns it off
+  - the Markdown in the source is lightly coloured, and the code in fenced blocks in its
+    language (` ```js `); *colours* in the panel's header turns it off
   - *source / both / rendered* choose the panels; *files* hides the file list; drag the gaps
     between panels to resize them (double-click to reset)
 - **Rendering**: *meditor (live)* renders as you type, GitHub-flavoured: tables, task lists,
   strikethrough, autolinks, footnotes, alerts (`> [!NOTE]`), front matter, emoji shortcodes
-  (`:tada:`), syntax colours in code blocks (JavaScript/TypeScript, Python, shell, JSON, YAML,
-  C/C++, Java, Rust, Go, HTML/XML, CSS, diff), and HTML (sanitised much like GitHub does).
+  (`:tada:`), syntax colours in code blocks (the languages above), and HTML (sanitised much
+  like GitHub does).
   Math (`$…$`, `$$…$$`, ```` ```math ````) and Mermaid diagrams are shown as their source, set
   apart: GitHub draws them with scripts this page does not load. *GitHub (exact)* asks GitHub
   to render it, which is exactly what github.com shows (math and diagrams included) but costs
@@ -163,7 +179,9 @@ same files are what GitHub Pages serves.
 | file | what |
 | --- | --- |
 | `src/markdown.js` | GitHub-flavoured Markdown → HTML, and the HTML sanitiser |
-| `src/highlight.js` | syntax colours for code blocks, with GitHub's class names |
+| `src/highlight.js` | syntax colours for code, line by line, with GitHub's class names |
+| `src/mdsyntax.js` | the colours of the source panel: Markdown, and code through `highlight.js` |
+| `src/filetypes.js` | which files are Markdown, other text (in which language) or not text |
 | `src/emoji.js` | the emoji shortcodes (`:tada:`) |
 | `src/github.js` | the REST API calls (files, trees, branches, commits, pull requests) |
 | `src/auth.js` | signing in: the GitHub App's OAuth flow (with PKCE), token renewal, tokens |

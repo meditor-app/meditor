@@ -1,13 +1,15 @@
-// The GitHub REST API, as much of it as an editor of Markdown files needs.
+// The GitHub REST API, as much of it as an editor of text files needs.
 //
 // Everything goes straight from the browser to api.github.com, which allows that (CORS),
 // so the page needs no server of its own (apart from the sign-in relay, see auth.js).
 // The user's token never goes anywhere else.
 // `fetch` is injected so the tests can run against a fake.
 
+import { isBinaryContent, MAX_TEXT_BYTES } from './filetypes.js';
+
 const API = 'https://api.github.com';
 
-export const MARKDOWN_EXT = /\.(md|markdown|mdown|mkdn|mkd|mdx|rmd)$/i;
+export { MARKDOWN_EXT } from './filetypes.js';
 
 export class GitHubError extends Error {
   constructor(status, message, body) {
@@ -30,7 +32,7 @@ export function bytesToBase64(bytes) {
 }
 
 /** Base64 (possibly wrapped over lines, as the API sends it) to bytes. */
-function base64ToBytes(b64) {
+export function base64ToBytes(b64) {
   const bin = atob(b64.replace(/\s+/g, ''));
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
@@ -48,16 +50,20 @@ export function decodeBase64(b64) {
 // the file had, so that a commit changes only the lines the user changed. A file that is not
 // UTF-8 (Latin-1, Windows-1250, …) cannot be shown as it is: its text has U+FFFD for the
 // bytes that could not be read, and `utf8: false` stops it from being committed, since that
-// would write U+FFFD over them for good.
+// would write U+FFFD over them for good. (getFile does not hand such a file to the editor at
+// all: see there. encodeFile refuses it all the same, whatever the text came from.)
 
 /** @typedef {{eol: '\n'|'\r\n', bom: boolean, utf8: boolean}} FileFormat */
 
 /** How a new file is written. */
 export const PLAIN_FORMAT = Object.freeze({ eol: '\n', bom: false, utf8: true });
 
-/** @returns {{text: string, format: FileFormat}} */
+/**
+ * @param {string|Uint8Array} b64 the file in base64, or its bytes
+ * @returns {{text: string, format: FileFormat}}
+ */
 export function decodeFile(b64) {
-  const bytes = base64ToBytes(b64);
+  const bytes = typeof b64 === 'string' ? base64ToBytes(b64) : b64;
   let raw;
   let utf8 = true;
   try {
@@ -249,8 +255,14 @@ export class GitHub {
   }
 
   /**
-   * @returns {Promise<{text: string, sha: string, format: FileFormat}|null>} null when there is
-   *   no such file; the text has LF line endings and no BOM, `format` says how to write it back
+   * A text file: its text has LF line endings and no BOM, `format` says how to write it back.
+   * One that is no text — NUL bytes (see filetypes.js, isBinaryContent), or not UTF-8
+   * (`notUtf8`: Latin-1 and the like, which the editor would show and save with U+FFFD) — or
+   * larger than MAX_TEXT_BYTES comes back without its text, saying so (`binary`, `tooLarge`,
+   * with its `size`); one that large is not even downloaded.
+   * @returns {Promise<{text: string, sha: string, format: FileFormat}|{text: null, sha: string,
+   *   size: number, binary?: true, notUtf8?: true, tooLarge?: true}|null>} null when there is
+   *   no such file
    */
   async getFile(owner, name, path, ref) {
     let f;
@@ -261,12 +273,17 @@ export class GitHub {
       throw e;
     }
     if (Array.isArray(f) || f.type !== 'file') throw new GitHubError(400, `${path} is not a file`);
+    if (f.size > MAX_TEXT_BYTES) return { text: null, sha: f.sha, size: f.size, tooLarge: true };
+    let b64 = f.content || '';
     // Over 1 MB the contents API leaves `content` empty; the blob API has no such limit.
     if (f.encoding === 'none' || (!f.content && f.size > 0)) {
-      const blob = await this.request('GET', `${repoUrl(owner, name)}/git/blobs/${f.sha}`);
-      return { ...decodeFile(blob.content), sha: f.sha };
+      b64 = (await this.request('GET', `${repoUrl(owner, name)}/git/blobs/${f.sha}`)).content;
     }
-    return { ...decodeFile(f.content || ''), sha: f.sha };
+    const bytes = base64ToBytes(b64);
+    if (isBinaryContent(bytes)) return { text: null, sha: f.sha, size: f.size, binary: true };
+    const file = decodeFile(bytes);
+    if (!file.format.utf8) return { text: null, sha: f.sha, size: f.size, binary: true, notUtf8: true };
+    return { ...file, sha: f.sha };
   }
 
   /** A file's bytes (for images in private repositories, which have no public URL). */

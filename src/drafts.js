@@ -10,12 +10,14 @@
 // and the tab asks before it is closed for as long as anything is.
 
 import { basename } from './links.js';
+import { isMarkdown } from './filetypes.js';
 
 /** @typedef {{text: string, sha?: string|null, at?: number}} Draft */
 /** @typedef {{get(k: string): any, set(k: string, v: any): boolean, del(k: string): void}} Store */
 
-/** What a new file starts with: a heading made of its name. */
+/** What a new file starts with: a heading made of its name if it is Markdown, else nothing. */
 export function newFileText(path) {
+  if (!isMarkdown(path)) return '';
   const title = basename(path).replace(/\.[^.]+$/, '').replace(/[-_]+/g, ' ');
   return `# ${title.charAt(0).toUpperCase()}${title.slice(1)}\n\n`;
 }

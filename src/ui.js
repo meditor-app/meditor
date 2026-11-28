@@ -11,18 +11,19 @@ import {
 } from './links.js';
 import {
   wrap, togglePrefix, orderedList, taskList, heading, link, codeBlock, table, rule, indent,
-  continueList, toggleTask, countWords,
+  continueList, toggleTask, countWords, indentUnit, newlineIndent,
 } from './edit.js';
 import { lineDiff } from './diff.js';
 import {
   findAll, matchFrom, matchBefore, replaceOne, replaceAll, escapeRegExp, MAX_MATCHES,
   anchorAfter, findShortcut, findOptionKey, shortcutText, commandHeld,
 } from './find.js';
-import { tokenizeLine, retokenize, START, rangesByLine, lineHtml } from './mdsyntax.js';
+import { retokenize, rangesByLine, lineHtml, syntaxFor } from './mdsyntax.js';
+import { isMarkdown, notTextKind, fileLanguage, newFilePath, MAX_TEXT_BYTES } from './filetypes.js';
 import { proposeChange } from './fork.js';
 import { proposeImagePath, imageMarkdown, referencedPaths, formatSize } from './images.js';
 import { Drafts, newFileText } from './drafts.js';
-import { loadLocation, latest } from './nav.js';
+import { loadLocation, latest, NotTextError } from './nav.js';
 
 const $ = (id) => document.getElementById(id);
 const IS_MAC = /mac|iphone|ipad/i.test(navigator.userAgentData?.platform || navigator.platform || '');
@@ -109,6 +110,8 @@ const state = {
   wideView: 'split', // the view chosen on wider screens
   phoneView: 'edit', // and on a phone, which shows one panel at a time
   filesPref: true, // the file list shown beside the panels on wider screens
+  mdOnly: false, // the file list shows only the Markdown files
+  notText: new Map(), // repo path -> why it is not opened (binary, too large), found on opening
   sync: true,
   images: new Map(), // repo image path -> object URL (private repositories)
   pending: new Map(), // pasted images of the open document, not committed yet (see loadPending)
@@ -153,6 +156,9 @@ async function busy(label, fn) {
     }
   }
 }
+
+/** The open document is Markdown (the scratchpad is): rendered beside its source, with the toolbar. */
+const isMdDoc = () => !state.loc || isMarkdown(state.loc.path);
 
 const draftKey = (loc) => `${K.draft}${loc.owner}/${loc.name}@${loc.ref}:${loc.path}`;
 
@@ -330,8 +336,15 @@ async function applyLocation(want) {
   }
   let r;
   try {
-    r = await loadLocation(state.gh, { repo: state.repo, tree: state.tree, loc: state.loc }, want, busy);
-  } catch {
+    const notText = (loc) => state.notText.get(notTextKey(loc));
+    r = await loadLocation(state.gh, { repo: state.repo, tree: state.tree, loc: state.loc, notText }, want, busy);
+  } catch (e) {
+    // a file that is not text (or too large) opens on GitHub instead: say so, with a link
+    if (e instanceof NotTextError) {
+      state.notText.set(notTextKey(e.loc), e.notText);
+      toast(`${escapeHtml(notTextReason(e.loc.path, e.size, e.notText))} <a href="${escapeHtml(githubUrl(e.loc, e.loc.path))}" target="_blank" rel="noopener">Open it on GitHub ↗</a>`, 10000);
+      renderTree();
+    }
     // nothing has changed (busy said why): the address goes back to what is still open. With
     // nothing open it is kept, so that reloading (signed in, say) tries it again.
     if (state.repo) history.replaceState(null, '', formatFragment(state.loc || { owner: state.repo.owner, name: state.repo.name, ref: state.tree?.ref }));
@@ -339,7 +352,7 @@ async function applyLocation(want) {
     return;
   }
   const { repo, tree, loc } = r;
-  if (!want.ref || !want.path) history.replaceState(null, '', formatFragment(loc));
+  if (!want.ref || want.path !== loc.path) history.replaceState(null, '', formatFragment(loc));
   if (r.branches) {
     const current = branchRequests.begin();
     state.branches = [];
@@ -355,7 +368,7 @@ async function applyLocation(want) {
   if (!loc.path) {
     openScratch();
     renderBranches();
-    status('This branch has no Markdown files. Create one with “＋ new”.', 'warn');
+    status('This branch has no Markdown file to start with: open any file from the list, or create one with “＋ new”.', 'warn');
     return;
   }
   if (!r.same) showFile(loc, r.file);
@@ -397,21 +410,35 @@ function showFile(loc, file) {
       actions: [['restore my version', () => { drafts.resolve(); setText(draft.text, true); hideBanner(); }], ['discard it', () => discardDraft()]],
     };
   }
-  const notUtf8 = state.doc.format?.utf8 === false
-    ? `${loc.path} is not UTF-8 text (it may be Latin-1 or another old encoding): � marks the characters meditor cannot read, and it cannot be committed from here.`
-    : null;
-  if (!banner && notUtf8) banner = { text: notUtf8, actions: [] };
   showDoc();
   if (banner) showBanner(banner.text, banner.actions);
   else hideBanner();
   if (drafts.unstored) draftWarning();
-  else if (notUtf8) status(notUtf8, 'warn');
   else if (state.doc.isNew) status(`${loc.path} is new: it will be created when you commit it.`, 'warn');
   else status('');
   loadPending(loc, draft?.text);
   $('src').setSelectionRange(0, 0);
   $('src').scrollTop = 0;
   $('previewScroll').scrollTop = 0;
+}
+
+const notTextKey = (loc) => `${loc.owner}/${loc.name}@${loc.ref}:${loc.path}`;
+
+/**
+ * Why the file at `path` is not opened in the editor, or '' when it is: `found` is what
+ * opening it found ('binary', 'encoding', 'large'), else its name and `size` tell.
+ */
+function notTextReason(path, size, found) {
+  const name = basename(path);
+  const kind = found || notTextKind(path, size);
+  if (kind === 'binary') return `${name} is not a text file, so meditor does not edit it.`;
+  if (kind === 'encoding') {
+    return `${name} is not UTF-8 text (it may be Latin-1 or another old encoding): meditor could neither show nor commit it as it is.`;
+  }
+  if (kind === 'large') {
+    return `${name} is ${size ? formatSize(size) : 'too large'}: meditor opens text files up to ${formatSize(MAX_TEXT_BYTES)}.`;
+  }
+  return '';
 }
 
 function when(t) {
@@ -457,10 +484,32 @@ function showDoc() {
   gh.hidden = !loc || state.doc.isNew;
   if (loc) gh.href = githubUrl(loc, loc.path);
   document.title = loc ? `${basename(loc.path)} · ${loc.owner}/${loc.name} — meditor` : 'meditor — Markdown editor for GitHub';
+  showDocKind();
   renderTree();
   updateDirty();
   updateCommitButton();
   renderPreview(true);
+}
+
+/**
+ * Markdown is edited beside its rendered page, with the formatting toolbar and a word count;
+ * any other text file in the editor alone, full width (the view chosen for Markdown is kept
+ * for the next Markdown file), as code.
+ */
+function showDocKind() {
+  const md = isMdDoc();
+  document.body.classList.toggle('codefile', !md);
+  const ta = src();
+  ta.spellcheck = md;
+  ta.setAttribute('aria-label', md ? 'Markdown source' : 'source');
+  for (const b of document.querySelectorAll('button[data-view]')) {
+    b.dataset.title ??= b.title;
+    b.disabled = !md;
+    b.title = md ? b.dataset.title : 'only Markdown files are rendered';
+  }
+  applyView();
+  updateStats();
+  drawSource(); // a rename may have changed the language
 }
 
 // ---------------------------------------------------------------- the editor
@@ -539,6 +588,7 @@ function onTextChanged() {
   clearTimeout(draftTimer);
   draftTimer = setTimeout(saveDraftNow, 400);
   clearTimeout(renderTimer);
+  if (!isMdDoc()) return;
   const big = src().value.length > 200000;
   renderTimer = setTimeout(() => renderPreview(), state.renderer === 'github' ? 1200 : big ? 300 : 60);
 }
@@ -601,8 +651,8 @@ function updateStats() {
   const before = text.slice(0, ta.selectionStart);
   const line = before.split('\n').length;
   const col = ta.selectionStart - before.lastIndexOf('\n');
-  const words = countWords(text);
-  $('stats').textContent = `Ln ${line}, Col ${col} · ${words.toLocaleString()} words · ${text.split('\n').length.toLocaleString()} lines`;
+  const words = isMdDoc() ? `${countWords(text).toLocaleString()} words · ` : '';
+  $('stats').textContent = `Ln ${line}, Col ${col} · ${words}${text.split('\n').length.toLocaleString()} lines`;
 }
 
 function updateCommitButton() {
@@ -622,7 +672,8 @@ const canFork = () => !!state.user && !!state.repo && !state.repo.canPush
 function onKeyDown(e) {
   const ta = src();
   const mod = e.ctrlKey || e.metaKey;
-  if (commandHeld(e, IS_MAC) && !e.altKey) {
+  const md = isMdDoc();
+  if (md && commandHeld(e, IS_MAC) && !e.altKey) {
     const k = e.key.toLowerCase();
     const map = { b: 'bold', i: 'italic', k: 'link', e: 'code', 1: 'h1', 2: 'h2', 3: 'h3' };
     if (map[k] && !e.shiftKey) {
@@ -638,11 +689,11 @@ function onKeyDown(e) {
   }
   if (e.key === 'Tab' && !mod && !e.altKey) {
     e.preventDefault();
-    applyEdit(indent(sel(), e.shiftKey));
+    applyEdit(indent(sel(), e.shiftKey, md ? null : indentUnit(ta.value, fileLanguage(state.loc.path) === 'make')));
     return;
   }
   if (e.key === 'Enter' && !mod && !e.shiftKey && !e.altKey && !e.isComposing) {
-    const r = continueList(sel());
+    const r = md ? continueList(sel()) : newlineIndent(sel());
     if (r) {
       e.preventDefault();
       applyEdit(r);
@@ -655,7 +706,8 @@ function onKeyDown(e) {
 // ---------------------------------------------------------------- highlighting
 //
 // The textarea's own text is transparent (its caret and selection are not); under it lies a
-// copy of the text, one div per line, coloured by mdsyntax.js and laid out exactly alike:
+// copy of the text, one div per line, coloured by mdsyntax.js (Markdown) or highlight.js
+// (code, by the file's language: see filetypes.js) and laid out exactly alike:
 // same font, padding, wrapping and width, and moved with the textarea's scroll. Find
 // matches are marked in the same copy, so it is also shown, uncoloured and under visible
 // text, while the find bar is open with highlighting off. An edit re-tokenizes only the
@@ -664,8 +716,9 @@ function onKeyDown(e) {
 const hl = {
   on: true,
   mode: '', // 'colour', 'plain' (find matches only) or '' (not shown)
+  syntax: null, // the tokenizer (mdsyntax.js, syntaxFor) the colours are from
   lines: [], // the text drawn, by line
-  states: [START], // states[i]: the tokenizer's state before line i
+  states: [], // states[i]: the tokenizer's state before line i
   tokens: [],
   marks: [], // per line: the find marks drawn on it, as a string
   marked: 0, // lines with find marks
@@ -680,7 +733,15 @@ const ZWSP = '\u200b'; // gives an empty line its height
 
 /** Bring the highlighted copy up to date with the text and the find matches. */
 function drawSource() {
-  const want = hl.on ? 'colour' : find.open ? 'plain' : '';
+  // the file's language, by its name, or a script's by its #! line; plain text has none
+  const text = src().value;
+  const nl = text.indexOf('\n');
+  const syntax = syntaxFor(state.loc ? fileLanguage(state.loc.path, text.slice(0, nl < 0 ? 200 : Math.min(nl, 200))) : 'markdown');
+  if (syntax !== hl.syntax) {
+    hl.syntax = syntax;
+    hl.lines = []; // all again
+  }
+  const want = hl.on && syntax ? 'colour' : find.open ? 'plain' : '';
   const box = $('srcHlText');
   if (want !== hl.mode) {
     hl.mode = want;
@@ -698,7 +759,7 @@ function drawSource() {
   // (and no reading of the textarea's layout from here on: that would lay it out again
   // at every keystroke; its scroll events keep the copy in place)
   if (!want) return;
-  const lines = src().value.split('\n');
+  const lines = text.split('\n');
   const marks = find.open && find.matches.length
     ? rangesByLine(lines, find.matches, (k) => (k === find.cur ? 'hit cur' : 'hit')) : null;
   const colour = want === 'colour';
@@ -721,7 +782,7 @@ function drawSource() {
 
   // all at once: one innerHTML is much faster than hundreds of lines one by one
   const drawAll = () => {
-    let st = START;
+    let st = syntax?.start;
     hl.states = [st];
     hl.tokens = [];
     hl.marks = [];
@@ -729,7 +790,7 @@ function drawSource() {
     const html = [];
     for (let i = 0; i < n; i++) {
       if (colour) {
-        const r = tokenizeLine(lines[i], st, lines[i + 1]);
+        const r = syntax.line(lines[i], st, lines[i + 1]);
         hl.tokens[i] = r.tokens;
         st = r.state;
         hl.states.push(st);
@@ -761,7 +822,7 @@ function drawSource() {
   if (colour) {
     // the lines whose colours may have changed; if that is far (a code fence opened above
     // the rest of the document), everything again
-    const end = retokenize(lines, hl.tokens, hl.states, a, oldEnd, newEnd, MANY);
+    const end = retokenize(lines, hl.tokens, hl.states, a, oldEnd, newEnd, MANY, syntax);
     if (end < 0) {
       drawAll();
       return;
@@ -1097,6 +1158,7 @@ function imagesToCommit() {
 }
 
 function onPaste(e) {
+  if (!isMdDoc()) return; // a picture means nothing in code: the browser does what it does
   const files = [...(e.clipboardData?.files || [])].filter((f) => f.type.startsWith('image/'));
   if (!files.length) return;
   e.preventDefault();
@@ -1114,7 +1176,8 @@ function onDrop(e) {
   if (!all.length) return;
   e.preventDefault();
   const files = all.filter((f) => f.type.startsWith('image/'));
-  if (files.length) addImages(files);
+  if (files.length && !isMdDoc()) toast('Images can be added to Markdown files only.');
+  else if (files.length) addImages(files);
   else toast('Only images can be dropped into the text.');
 }
 
@@ -1186,7 +1249,12 @@ function resolveLink(url) {
   // above the repository's root: on github.com, never relative to the editor's page (#31)
   if (r.kind === 'outside') return r.url;
   if (r.kind !== 'repo') return url;
+  // Markdown, and other text files of the repository, open here; the rest on GitHub
   if (MARKDOWN_EXT.test(r.path)) return formatFragment({ ...loc, path: r.path });
+  const entry = state.tree?.entries.find((e) => e.path === r.path && e.type === 'file');
+  if (entry && !notTextReason(r.path, entry.size, state.notText.get(notTextKey({ ...loc, path: r.path })))) {
+    return formatFragment({ ...loc, path: r.path });
+  }
   const isDir = state.tree?.entries.some((e) => e.type === 'dir' && e.path === r.path) || url.endsWith('/') || r.path === '';
   return githubUrl(loc, r.path, isDir ? 'tree' : 'blob') + (r.hash ? '#' + r.hash : '');
 }
@@ -1197,6 +1265,14 @@ async function renderPreview(now = false) {
   const text = src().value;
   const out = $('preview');
   const seq = ++renderSeq;
+  if (!isMdDoc()) {
+    // nothing to render (and a repository's HTML is never shown as a page): the panel is hidden
+    out.replaceChildren();
+    out.dataset.rendered = '';
+    $('renderNote').textContent = '';
+    previewBlocks = null;
+    return;
+  }
   if (state.renderer === 'github') {
     if (!now && text === out.dataset.rendered) return;
     $('renderNote').textContent = 'rendering on GitHub…';
@@ -1427,7 +1503,15 @@ function renderTree() {
   if (!repo || !state.tree) return;
 
   const filter = $('filter').value.trim().toLowerCase();
-  const files = state.tree.entries.filter((e) => e.type === 'file' && MARKDOWN_EXT.test(e.path)).map((e) => e.path);
+  const sizes = new Map();
+  const files = [];
+  for (const e of state.tree.entries) {
+    if (e.type !== 'file' || (state.mdOnly && !MARKDOWN_EXT.test(e.path))) continue;
+    files.push(e.path);
+    sizes.set(e.path, e.size);
+  }
+  const loc = { owner: repo.owner, name: repo.name, ref: state.tree.ref };
+  const notText = (path) => notTextReason(path, sizes.get(path), state.notText.get(notTextKey({ ...loc, path })));
   const cur = state.loc?.path;
   if (cur && state.doc.isNew && !files.includes(cur)) files.push(cur);
   const drafts = new Set();
@@ -1444,13 +1528,28 @@ function renderTree() {
   const fileNode = (path, label) => {
     const li = document.createElement('li');
     li.className = 'file';
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.className = 'node' + (path === cur ? ' current' : '');
-    b.dataset.path = path;
-    b.title = path;
-    if (path === cur) b.setAttribute('aria-current', 'true');
-    b.innerHTML = `<span class="ic" aria-hidden="true">▤</span><span class="nm">${escapeHtml(label)}</span>${drafts.has(path) ? '<span class="draft" title="unsaved changes in this browser" aria-hidden="true">●</span><span class="sr-only">, unsaved changes</span>' : ''}`;
+    // a file that is not text opens on GitHub (a link, so it can open in a tab of its own)
+    const why = notText(path);
+    const md = MARKDOWN_EXT.test(path);
+    const b = document.createElement(why ? 'a' : 'button');
+    if (why) {
+      b.href = githubUrl(loc, path);
+      b.target = '_blank';
+      b.rel = 'noopener';
+      b.className = 'node bin';
+      b.title = `${why} Opens on GitHub.`;
+    } else {
+      b.type = 'button';
+      b.className = 'node' + (path === cur ? ' current' : '') + (md ? '' : ' txt');
+      b.dataset.path = path;
+      b.title = path;
+      if (path === cur) b.setAttribute('aria-current', 'true');
+    }
+    const icon = why ? '<span class="ic" aria-hidden="true">◦</span>'
+      : md ? '<span class="ic" aria-hidden="true">▤</span>' : '<span class="ic" aria-hidden="true">▢</span>';
+    b.innerHTML = `${icon}<span class="nm">${escapeHtml(label)}</span>`
+      + (why ? '<span class="ext" aria-hidden="true">↗</span><span class="sr-only">, not text: opens on GitHub</span>' : '')
+      + (drafts.has(path) ? '<span class="draft" title="unsaved changes in this browser" aria-hidden="true">●</span><span class="sr-only">, unsaved changes</span>' : '');
     const acts = document.createElement('span');
     acts.className = 'acts';
     for (const [act, text, title, cls] of [['move', '✎', 'rename or move…', ''], ['delete', '✕', 'delete…', 'del']]) {
@@ -1470,12 +1569,21 @@ function renderTree() {
   };
 
   const ul = document.createElement('ul');
+  const none = state.mdOnly ? 'Markdown file' : 'file';
   if (filter) {
     const hits = files.filter((p) => p.toLowerCase().includes(filter)).sort();
-    for (const p of hits) ul.append(fileNode(p, p));
-    if (!hits.length) ul.innerHTML = '<li class="note">no Markdown file matches</li>';
+    // a few hundred at most: a short filter in a large repository matches thousands
+    const MAX_HITS = 500;
+    for (const p of hits.slice(0, MAX_HITS)) ul.append(fileNode(p, p));
+    if (hits.length > MAX_HITS) {
+      const li = document.createElement('li');
+      li.className = 'note';
+      li.textContent = `and ${(hits.length - MAX_HITS).toLocaleString()} more: type more of the name`;
+      ul.append(li);
+    }
+    if (!hits.length) ul.innerHTML = `<li class="note">no ${none} matches</li>`;
   } else {
-    // a directory tree holding only the Markdown files
+    // a directory tree holding the files (the Markdown ones only, if so chosen)
     const root = { dirs: new Map(), files: [] };
     for (const p of files) {
       const parts = p.split('/');
@@ -1514,7 +1622,7 @@ function renderTree() {
       for (const p of n.files.sort((a, b) => basename(a).localeCompare(basename(b)))) into.append(fileNode(p, basename(p)));
     };
     build(root, '', ul);
-    if (!files.length) ul.innerHTML = '<li class="note">no Markdown files on this branch</li>';
+    if (!files.length) ul.innerHTML = `<li class="note">no ${none}s on this branch</li>`;
   }
   tree.append(ul);
   if (state.tree.truncated) {
@@ -1735,7 +1843,8 @@ async function openByUrl(input) {
     return false;
   }
   const { ref, path } = splitRefPath(p.rest, branches);
-  go({ owner: p.owner, name: p.name, ref, path: MARKDOWN_EXT.test(path) ? path : undefined });
+  // any file (one that is not text says so); a directory opens its README
+  go({ owner: p.owner, name: p.name, ref, path: path || undefined });
   return true;
 }
 
@@ -1994,7 +2103,11 @@ async function propose({ text, title, body, message }) {
 async function reloadKeepingText() {
   const loc = state.loc;
   const f = await busy('loading the latest version', () => state.gh.getFile(loc.owner, loc.name, loc.path, loc.ref));
-  if (!f) return;
+  if (!f || f.text === null) {
+    // (it may have become binary, or too large, on GitHub since)
+    if (f) status(notTextReason(loc.path, f.size, f.tooLarge ? 'large' : f.notUtf8 ? 'encoding' : 'binary'), 'bad');
+    return;
+  }
   state.doc = { base: f.text, sha: f.sha, isNew: false, format: f.format };
   if (state.tree?.ref === loc.ref) recordCommit(state.tree.entries, { [loc.path]: f.sha });
   drafts.rebase(f.text, f.sha);
@@ -2186,17 +2299,23 @@ function openNewDialog() {
 }
 
 function createNew() {
-  let p = joinPath('', $('newPath').value.trim());
-  if (!p) return false;
-  if (!/\.[a-z0-9]+$/i.test(p)) p += '.md';
+  const typed = joinPath('', $('newPath').value.trim());
+  if (!typed) return false;
+  // any text file: as typed if it has an extension (or is a Makefile, a .gitignore…), else .md
+  const r = newFilePath(typed);
+  if (r.error) {
+    $('newError').textContent = r.error;
+    $('newError').hidden = false;
+    return false;
+  }
   const ref = state.tree?.ref || state.repo.defaultBranch;
-  go({ owner: state.repo.owner, name: state.repo.name, ref, path: p });
+  go({ owner: state.repo.owner, name: state.repo.name, ref, path: r.path });
   return true;
 }
 
 function download() {
   const name = state.loc ? basename(state.loc.path) : 'scratchpad.md';
-  const blob = new Blob([src().value], { type: 'text/markdown;charset=utf-8' });
+  const blob = new Blob([src().value], { type: `${isMdDoc() ? 'text/markdown' : 'text/plain'};charset=utf-8` });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = name;
@@ -2220,13 +2339,19 @@ async function openLocalFile(file) {
 function setView(v) {
   if (!phone.matches) state.wideView = v;
   else if (v !== 'split') state.phoneView = v;
-  v = phone.matches ? state.phoneView : state.wideView;
+  savePrefs();
+  applyView();
+}
+
+/** Shows the view chosen (or, for a file that is not Markdown, the source alone). */
+function applyView() {
+  let v = phone.matches ? state.phoneView : state.wideView;
+  if (!isMdDoc()) v = 'edit';
   state.view = v;
   $('workspace').dataset.view = v;
   for (const b of document.querySelectorAll('[data-view]')) {
     if (b.tagName === 'BUTTON') b.setAttribute('aria-checked', String(b.dataset.view === v));
   }
-  savePrefs();
   lineTops = null;
   previewBlocks = null;
   placeSplits();
@@ -2258,6 +2383,7 @@ function savePrefs() {
     renderer: state.renderer,
     sync: state.sync,
     highlight: hl.on,
+    mdOnly: state.mdOnly,
     theme,
   });
 }
@@ -2442,6 +2568,8 @@ export async function boot() {
   $('syncScroll').checked = state.sync;
   hl.on = prefs.highlight !== false;
   $('highlight').checked = hl.on;
+  state.mdOnly = prefs.mdOnly === true;
+  $('mdOnly').setAttribute('aria-pressed', String(state.mdOnly));
   state.wideView = ['edit', 'split', 'preview'].includes(prefs.view) ? prefs.view : 'split';
   state.phoneView = prefs.phoneView === 'preview' ? 'preview' : 'edit';
   state.filesPref = prefs.files !== false;
@@ -2508,6 +2636,12 @@ export async function boot() {
   // files
   $('tree').addEventListener('click', onTreeClick);
   $('filter').addEventListener('input', renderTree);
+  $('mdOnly').addEventListener('click', () => {
+    state.mdOnly = !state.mdOnly;
+    $('mdOnly').setAttribute('aria-pressed', String(state.mdOnly));
+    savePrefs();
+    renderTree();
+  });
   $('newFile').addEventListener('click', openNewDialog);
   $('refresh').addEventListener('click', async () => {
     if (!state.repo) return;

@@ -4,6 +4,7 @@
 // text (#31).
 
 import { MARKDOWN_EXT } from './github.js';
+import { notTextKind } from './filetypes.js';
 
 /** @typedef {import('./links.js').Location} Location */
 
@@ -11,11 +12,28 @@ export const sameRepo = (a, b) => !!(a && b && a.owner.toLowerCase() === b.owner
 
 const sameFile = (a, b) => !!(a && b && a.owner === b.owner && a.name === b.name && a.ref === b.ref && a.path === b.path);
 
-/** The Markdown file a branch opens with: its README, else a top-level file, else any. */
-export function defaultFile(entries) {
+/**
+ * The Markdown file a branch opens with: its README, else a top-level file, else any. For a
+ * directory (`dir`, a github.com/…/tree/… link), its own README comes first.
+ */
+export function defaultFile(entries, dir = '') {
   const md = entries.filter((e) => e.type === 'file' && MARKDOWN_EXT.test(e.path));
-  const f = md.find((e) => /^readme\.(md|markdown)$/i.test(e.path)) || md.find((e) => !e.path.includes('/')) || md[0];
+  const inDir = dir && md.find((e) => e.path.startsWith(`${dir}/`) && /^readme\.(md|markdown)$/i.test(e.path.slice(dir.length + 1)));
+  const f = inDir || md.find((e) => /^readme\.(md|markdown)$/i.test(e.path)) || md.find((e) => !e.path.includes('/')) || md[0];
   return f ? f.path : undefined;
+}
+
+/**
+ * The error loadLocation rejects with for a file that is not opened as text: `notText` is
+ * 'binary', 'encoding' (not UTF-8) or 'large' (see filetypes.js), `loc` the file.
+ */
+export class NotTextError extends Error {
+  constructor(loc, notText, size) {
+    super(`${loc.path} is not opened as text (${notText})`);
+    this.loc = loc;
+    this.notText = notText;
+    this.size = size;
+  }
 }
 
 /**
@@ -28,7 +46,10 @@ export function defaultFile(entries) {
  * files; `file` is what getFile gave (null for a file that does not exist yet); `same`
  * says `loc` is the file open already (it is not read again); `branches`, for a repository
  * other than the current one, is its branch list on the way (a promise that never rejects:
- * null if it failed). Rejects if the repository or the file cannot be read.
+ * null if it failed). Rejects if the repository or the file cannot be read, and with a
+ * NotTextError for a file that is not text or too large (known by its name, its size in the
+ * list, `cur.notText(loc)` — what an earlier try found — or once read), so that it is not
+ * opened either. A path that is a directory opens its README.
  */
 export async function loadLocation(gh, cur, want, step = (label, fn) => fn()) {
   const newRepo = !sameRepo(want, cur.repo);
@@ -45,11 +66,20 @@ export async function loadLocation(gh, cur, want, step = (label, fn) => fn()) {
     }
   }
   const loc = { owner: repo.owner, name: repo.name, ref };
-  const path = want.path || defaultFile(tree.entries);
+  const dir = want.path && tree.entries.some((e) => e.type === 'dir' && e.path === want.path);
+  const path = dir || !want.path ? defaultFile(tree.entries, dir ? want.path : '') : want.path;
   if (path) loc.path = path;
   const same = !!path && sameFile(loc, cur.loc);
   let file;
-  if (path && !same) file = await step(`opening ${path}`, () => gh.getFile(repo.owner, repo.name, path, ref));
+  if (path && !same) {
+    const entry = tree.entries.find((e) => e.type === 'file' && e.path === path);
+    const kind = cur.notText?.(loc) || notTextKind(path, entry?.size);
+    if (kind) throw new NotTextError(loc, kind, entry?.size);
+    file = await step(`opening ${path}`, () => gh.getFile(repo.owner, repo.name, path, ref));
+    if (file && file.text === null) {
+      throw new NotTextError(loc, file.tooLarge ? 'large' : file.notUtf8 ? 'encoding' : 'binary', file.size);
+    }
+  }
   return { repo, tree, loc, file, same, branches };
 }
 

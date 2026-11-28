@@ -176,7 +176,12 @@ test('a BOM is kept', async () => {
 test('a file that is not UTF-8 is not committed over with U+FFFD', async () => {
   const f = fake({ 'GET /repos/o/r/contents/a.md?ref=main': file([...bytesOf('# Caf'), 0xe9]), 'PUT /repos/o/r/contents/a.md': PUT, ...gitRoutes() });
   const gh = new GitHub('T', f);
-  const doc = await gh.getFile('o', 'r', 'a.md', 'main');
+  // getFile does not hand it to the editor at all (see filetypes.test.js) …
+  const got = await gh.getFile('o', 'r', 'a.md', 'main');
+  assert.equal(got.text, null);
+  assert.equal(got.notUtf8, true);
+  // … and should such a text get to a commit all the same, it is refused
+  const doc = { ...G.decodeFile(b64([...bytesOf('# Caf'), 0xe9])), sha: got.sha };
   assert.equal(doc.format.utf8, false);
   assert.equal(doc.text, '# Caf�');
   const notUtf8 = (e) => e.body?.notUtf8 && /not UTF-8/.test(e.message);

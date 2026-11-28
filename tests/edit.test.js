@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   wrap, togglePrefix, orderedList, taskList, heading, link, table, indent, continueList, toggleTask, countWords,
+  indentUnit, newlineIndent,
 } from '../src/edit.js';
 import { lineDiff } from '../src/diff.js';
 
@@ -48,6 +49,25 @@ test('Tab indents list items, Shift-Tab outdents', () => {
   assert.equal(show(indent(S('- a|'))), '  - a|');
   assert.equal(show(indent(S('  - a|'), true)), '- a|');
   assert.equal(show(indent(S('word|'))), 'word  |');
+});
+
+test('in a code file, Tab indents by the file\'s own unit, and Enter keeps the indentation', () => {
+  // at a caret: the unit, even on a line that would be a list item in Markdown
+  assert.equal(show(indent(S('- a|'), false, '    ')), '- a    |');
+  assert.equal(show(indent(S('x|'), false, '\t')), 'x\t|');
+  // lines: in and out by one unit (a tab, or up to 4 spaces, for a tab)
+  assert.equal(show(indent(S('[a\nb]'), false, '    ')), '[    a\n    b]');
+  assert.equal(show(indent(S('[      a\n  b]'), true, '    ')), '[  a\nb]');
+  assert.equal(show(indent(S('[\ta\n    b]'), true, '\t')), '[a\nb]');
+  assert.equal(indentUnit('a\n\tb\n\t\tc\n  d'), '\t');
+  assert.equal(indentUnit('def f():\n    x\n        y'), '    ');
+  assert.equal(indentUnit('a:\n  b:\n    c'), '  ');
+  assert.equal(indentUnit('no indentation'), '  ');
+  assert.equal(indentUnit('all:\n    x', true), '\t'); // a Makefile
+  assert.equal(show(newlineIndent(S('    a = 1|'))), '    a = 1\n    |');
+  assert.equal(show(newlineIndent(S('\tif x {| y'))), '\tif x {\n\t| y');
+  assert.equal(show(newlineIndent(S('a\n  b[c]d'))), 'a\n  b\n  |d');
+  assert.equal(show(newlineIndent(S('x|'))), 'x\n|');
 });
 
 test('Enter continues lists and quotes', () => {
